@@ -1,0 +1,126 @@
+"""합 (docs/rules 3장) + 치명타 — 손계산 시나리오 (DB 불필요)."""
+import pytest
+
+import lpdl
+from engine.runtime import (Battle, Runtime, Status, Unit, expect, run_action, run_clash, simulate_action,
+                            simulate_clash)
+from engine.runtime.loader import SPEC_DIRS
+from engine.runtime.state import SkillData
+
+HEADS = lambda p: True
+
+
+def runtime(src: str = "") -> Runtime:
+    doc = lpdl.merge([lpdl.load([SPEC_DIRS[0]]), lpdl.parse("lpdl 2\n" + src)])
+    rep = lpdl.validate(doc)
+    assert rep.ok, rep.errors
+    return Runtime(doc)
+
+
+def unit(name, base, cp, coins, side="ally", ident=None, **kw) -> Unit:
+    skills = {("S1", 0): SkillData("S1", 0, "s1", None, "타격", base=base, coin_power=cp, coins=coins, level=50)}
+    return Unit(name=name, identity_id=ident, side=side, skills=skills, **kw)
+
+
+def scripted(*values):
+    it = iter(values)
+    return lambda p: next(it)
+
+
+def test_stronger_side_wins_all_coins_remain_and_clash_count_bonus():
+    """A 10 고정 2코인 vs B 5 고정 2코인 → 2합 승리, 남은 코인 2개로 공격. 피해 × (1 + 합 횟수 0.01), 정신력 +12."""
+    rt = runtime()
+    a, b = unit("A", 10, 0, 2), unit("B", 5, 0, 2, side="enemy")
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert (o.winner, o.rounds, o.remaining) == ("A", 2, [1, 2])
+    assert o.result.damage == pytest.approx(10 * 1.02 * 2)
+    assert a.sanity == pytest.approx(10 * (1 + 0.2 * 1))
+    assert b.sanity == 0
+
+
+def test_win_probability_from_power_distribution():
+    """A 4+2 1코인 (4 또는 6) vs B 5 고정 1코인 → A 승리 50%."""
+    rt = runtime()
+    a, b = unit("A", 4, 2, 1), unit("B", 5, 0, 1, side="enemy")
+    outs = simulate_clash(rt, Battle([a, b]), "A", ("S1", 0), "B", ("S1", 0))
+    assert sum(o.prob for o in outs) == pytest.approx(1)
+    assert expect(outs, lambda o: o.result.winner == "A") == pytest.approx(0.5)
+
+
+def test_ties_repeat_and_count_as_clashes():
+    """같은 스킬 5+1 1코인끼리: 라운드마다 승 .25 / 패 .25 / 동점 .5 → 승률 .5, 합 횟수 기대값 2."""
+    rt = runtime()
+    a, b = unit("A", 5, 1, 1), unit("B", 5, 1, 1, side="enemy")
+    outs = simulate_clash(rt, Battle([a, b]), "A", ("S1", 0), "B", ("S1", 0), min_prob=1e-12)
+    assert sum(o.prob for o in outs) == pytest.approx(1, abs=1e-9)
+    assert expect(outs, lambda o: o.result.winner == "A") == pytest.approx(0.5, abs=1e-9)
+    assert expect(outs, lambda o: o.result.rounds) == pytest.approx(2, abs=1e-6)
+
+
+def test_fixed_equal_powers_never_resolve():
+    rt = runtime()
+    a, b = unit("A", 5, 0, 1), unit("B", 5, 0, 1, side="enemy")
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert o.winner is None and o.result is None
+
+
+def test_destroyed_coin_effects_do_not_fire_and_power_uses_remaining_coins():
+    """A 5+2 2코인 vs B 6 고정 2코인. 1합 패배(A 코인1 파괴) → 2·3합 승리 → 코인 2 만으로 공격.
+    코인 1 의 [적중시] 효과는 발동하지 않는다. 코인 2 위력 = 5 + 2 (남은 코인 중 앞면), 합 3회."""
+    rt = runtime('identity 1 { skill S1 { coin 1 { on hit { gain self.shield 100 } } '
+                 'coin 2 { on hit { gain self.shield 1 } } } }')
+    a, b = unit("A", 5, 2, 2, ident=1), unit("B", 6, 0, 2, side="enemy")
+    # 라운드 선택: 1합 toss(승 .75)=False → 패, 2합 toss(.5)=True → 승, 3합 True → 승, 공격 코인 2 앞면
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), scripted(False, True, True, True))
+    assert (o.winner, o.rounds, o.remaining) == ("A", 3, [2])
+    assert [r[0] for r in o.log] == ["B", "A", "A"]
+    assert a.shield == 1
+    assert o.result.coin_power == {2: 7}
+    assert o.result.damage == pytest.approx(7 * 1.03)
+
+
+def test_bleed_triggers_on_every_coin_flip_in_clash():
+    """합도 행동 — 라운드마다 남은 코인 수만큼 출혈. 1합 (A 2코인) + 공격 2코인 = 4회."""
+    rt = runtime()
+    a = unit("A", 10, 0, 2, statuses={"출혈": Status(potency=3, count=10)})
+    b = unit("B", 1, 0, 1, side="enemy")
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert o.rounds == 1
+    assert a.hp == 100 - 3 * 4 and a.statuses["출혈"].count == 6
+
+
+def test_clash_win_lose_events():
+    rt = runtime('identity 1 { skill S1 { on clash_win { gain self.shield 5 } on clash_lose { gain self.shield 50 } } }')
+    a, b = unit("A", 10, 0, 1, ident=1), unit("B", 1, 0, 1, side="enemy", ident=1)
+    run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert a.shield == 5
+    assert b.shield == pytest.approx(50 - 10 * 1.01)        # [합 패배시] 보호막이 이어지는 공격(1합 보너스)을 흡수
+
+
+def test_poise_crit_chance_and_count():
+    """호흡 위력 10 → 치명타 50%. 피해 10 → 치명타 시 ×(1 + 0.2). 치명타 발동 후 횟수 -1."""
+    rt = runtime()
+    a = unit("A", 10, 0, 1, statuses={"호흡": Status(potency=10, count=3)})
+    b = unit("B", 1, 0, 1, side="enemy")
+    outs = simulate_action(rt, Battle([a, b]), "A", ("S1", 0), "B")
+    assert expect(outs, lambda o: o.result.damage) == pytest.approx(0.5 * 10 + 0.5 * 12)
+    for o in outs:
+        crit = o.result.crits[1]
+        assert o.battle.units[0].statuses["호흡"].count == (2 if crit else 3)
+
+
+def test_poise_20_always_crits_without_branching():
+    rt = runtime()
+    a = unit("A", 10, 0, 1, statuses={"호흡": Status(potency=20, count=1)})
+    b = unit("B", 1, 0, 1, side="enemy")
+    outs = simulate_action(rt, Battle([a, b]), "A", ("S1", 0), "B")
+    assert len(outs) == 2                                   # 코인 앞/뒤만 (고정 위력이라 피해 동일)
+    assert all(o.result.damage == pytest.approx(12) for o in outs)
+    assert all("호흡" not in o.battle.units[0].statuses for o in outs)
+
+
+def test_no_poise_no_crit():
+    rt = runtime()
+    a, b = unit("A", 10, 0, 1), unit("B", 1, 0, 1, side="enemy")
+    r = run_action(rt, Battle([a, b]), a, ("S1", 0), b, HEADS)
+    assert r.crits == {1: False} and r.damage == pytest.approx(10)

@@ -9,7 +9,7 @@ from engine.coins import heads_prob
 from engine.damage import HitContext, hit_damage
 from engine.params import DEFAULT, Params
 
-from .interp import Action, Runtime
+from .interp import Action, Runtime, new_mods
 from .state import Battle, Unit
 
 Toss = Callable[[float], bool]
@@ -71,10 +71,30 @@ class ActionResult:
     coin_power: dict
     heads: dict
     skill: tuple
+    crits: dict = field(default_factory=dict)      # 코인 번호 → 치명타 여부
 
 
-def run_action(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: Unit, toss: Toss,
-               params: Params = DEFAULT) -> ActionResult:
+def choose(toss: Toss, probs: list[float]) -> int:
+    """범주형 선택을 이진 토스 연쇄로 분해 (열거기는 이진 토스만 안다). 확률 0/1 인 갈래는 토스하지 않는다."""
+    rest = sum(probs)
+    last = max(i for i, p in enumerate(probs) if p > 0)
+    for i, p in enumerate(probs):
+        if p <= 0:
+            continue
+        if i == last or p >= rest - 1e-12:
+            return i
+        if toss(p / rest):
+            return i
+        rest -= p
+    return last
+
+
+def _chance(toss: Toss, p: float) -> bool:
+    return p >= 1 or (p > 0 and toss(p))
+
+
+def _begin(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: Unit) -> tuple[Action, object]:
+    """[사용전] → [사용시] → 상시 효과 → [공격 시작 전]. 일방 공격과 합에서 같다."""
     key = actor.skill_override.get(skill_key, skill_key)
     rt._action_seq += 1
     a = Action(rt._action_seq, actor, target, actor.skills[key])
@@ -92,11 +112,18 @@ def run_action(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, targe
 
     rt.emit(battle, "before_attack", action=a)
     rt.emit(battle, "ally_before_attack", actor=actor)
+    return a, skill_ast
 
-    sk = a.skill
+
+def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, toss: Toss, params: Params,
+            coins: list[int], clash_count: int = 0) -> ActionResult:
+    """공격 단계: coins(남은 코인 번호)를 순서대로 토스해 적중. 코인 k 위력 = 기본 + 남은 코인 중 k번째까지 앞면 합."""
+    actor, sk = a.actor, a.skill
     heads: dict[int, bool] = {}
-    k = 1
-    while k <= sk.coins:
+    crits: dict[int, bool] = {}
+    i = 0
+    while i < len(coins):
+        k = coins[i]
         a.coin = k
         cm = a.coin_mods[k]
         if skill_ast is not None and k not in heads:
@@ -110,16 +137,21 @@ def run_action(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, targe
         rt.emit(battle, "coin_flip", action=a)
         rt.emit(battle, "head" if h else "tail", action=a)
         head_sum = sum(sk.coin_power + a.mods["coin_power"] + a.coin_mods[j]["coin_power"]
-                       for j in range(1, k + 1) if heads.get(j))
+                       for j in coins[:i + 1] if heads.get(j))
         power = max(params.min_power,
                     sk.base + a.mods["base_power"] + head_sum + a.mods["final_power"] + cm["final_power"])
         a.coin_power[k] = power
+        # 치명타: 확률은 spec 의 modify crit_chance (호흡 = keywords/standard.lpdl)
+        crit = _chance(toss, (a.mods["crit_chance"] + cm["crit_chance"]) / 100)
+        crits[k] = crit
         level = sk.level + a.mods["atk_level"]
         ctx = HitContext(
             phys_res=target.phys_res.get(sk.atk_type, "보통"),
             sin_res=target.sin_res.get(sk.sin, "보통"),
             offense_level=level,
             defense_level=(target.def_level or level) + a.target_mods["def_level"],
+            crit=crit,
+            clash_count=clash_count,
             dmg_pct=(a.mods["damage_pct"] + cm["damage_pct"] + a.target_mods["taken_damage_pct"]) / 100,
             flat_pre=a.mods["damage_flat"] + cm["damage_flat"],
         )
@@ -128,19 +160,118 @@ def run_action(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, targe
         rt.damage(target, dmg, a)
         rt.emit(battle, "hit", action=a)
         rt.emit(battle, "head_hit" if h else "tail_hit", action=a)
+        if crit:
+            rt.emit(battle, "crit", action=a)
         rt.emit(battle, "hit_taken", action=a, target=target)
         rt.emit(battle, "ally_hit_taken", actor=actor, target=target)
         if a.reuse > 0:                 # 이 코인 재사용: 같은 코인을 다시 토스해 적중
             a.reuse -= 1
             continue
-        k += 1
+        i += 1
     a.coin = None
     rt.emit(battle, "attack_end", action=a)
     rt.emit(battle, "ally_attack_end", actor=actor)
     for event, body, frame in a.deferred:
         if event == "attack_end":
             rt.exec_body(body, frame)
-    return ActionResult(a.damage, dict(a.coin_damage), dict(a.coin_power), dict(a.coin_heads), a.skill.key)
+    return ActionResult(a.damage, dict(a.coin_damage), dict(a.coin_power), dict(a.coin_heads), a.skill.key, crits)
+
+
+def run_action(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: Unit, toss: Toss,
+               params: Params = DEFAULT) -> ActionResult:
+    """일방 공격 1회."""
+    a, skill_ast = _begin(rt, battle, actor, skill_key, target)
+    return _attack(rt, battle, a, skill_ast, target, toss, params, list(range(1, a.skill.coins + 1)))
+
+
+# ── 합 (docs/rules 3장) ──────────────────────────────────────────────────────
+@dataclass
+class ClashOutcome:
+    winner: str | None              # 승자 이름. None = 끝나지 않음 (위력 고정 동점, max_rounds)
+    rounds: int                     # 합 비교 횟수 (동점 포함)
+    remaining: list                 # 승자의 남은 코인 번호
+    result: ActionResult | None     # 승자의 공격 결과
+    log: list = field(default_factory=list)   # 라운드별 ("A"|"B"|"=", A 남은 코인 수, B 남은 코인 수)
+
+
+def _clash_power_dist(rt: Runtime, battle: Battle, a: Action, skill_ast, left: list[int], params: Params) -> dict:
+    """남은 코인을 모두 토스했을 때 합 위력 분포. 코인마다 위력·앞면 확률이 달라도 되게 합성곱으로 계산."""
+    sk = a.skill
+    dist = {sk.base + a.mods["base_power"] + a.mods["final_power"] + a.mods["clash_power"]: 1.0}
+    for k in left:
+        cm = new_mods()
+        for name, v in a.coin_mods[k].items():
+            cm[name] += v
+        coin_ast = next((c for c in skill_ast.coins if c.index == k), None) if skill_ast is not None else None
+        if coin_ast is not None:                                   # 코인 상시 효과 (현재 상태 기준, 버림 복사본)
+            rt.run_static(battle, a.actor, cm, action=a, coin=coin_ast)
+        p = min(1.0, max(0.0, heads_prob(a.actor.sanity) + (a.mods["heads_prob"] + cm["heads_prob"]) / 100))
+        cp = sk.coin_power + a.mods["coin_power"] + cm["coin_power"]
+        nxt: dict = defaultdict(float)
+        for v, q in dist.items():
+            if p > 0:
+                nxt[v + cp] += q * p
+            if p < 1:
+                nxt[v] += q * (1 - p)
+        dist = nxt
+    out: dict = defaultdict(float)
+    for v, q in dist.items():
+        out[max(params.min_power, v)] += q
+    return out
+
+
+def run_clash(rt: Runtime, battle: Battle, a_unit: Unit, a_key: tuple, b_unit: Unit, b_key: tuple, toss: Toss,
+              params: Params = DEFAULT, max_rounds: int = 100) -> ClashOutcome:
+    """A 와 B 가 서로를 대상으로 합 → 승자가 남은 코인으로 패자를 공격.
+
+    라운드마다 양쪽 남은 코인을 모두 토스(코인마다 [코인 판정 시] 발생 — 출혈 등), 위력이 낮은 쪽 첫 코인 파괴,
+    동점이면 둘 다 보존하고 다시 비교. 라운드 결과는 승/패/동점 세 갈래로만 열거한다 (위력 분포로 확률 계산).
+    """
+    a, a_ast = _begin(rt, battle, a_unit, a_key, b_unit)
+    b, b_ast = _begin(rt, battle, b_unit, b_key, a_unit)
+    rt.emit(battle, "clash_start", action=a)
+    rt.emit(battle, "clash_start", action=b)
+
+    la, lb = list(range(1, a.skill.coins + 1)), list(range(1, b.skill.coins + 1))
+    rounds, log = 0, []
+    while la and lb and rounds < max_rounds:
+        for x, left in ((a, la), (b, lb)):
+            for k in left:
+                x.coin = k
+                rt.emit(battle, "coin_flip", action=x)
+            x.coin = None
+        da = _clash_power_dist(rt, battle, a, a_ast, la, params)
+        db = _clash_power_dist(rt, battle, b, b_ast, lb, params)
+        w = l = t = 0.0
+        for pa, qa in da.items():
+            for pb, qb in db.items():
+                if pa > pb:
+                    w += qa * qb
+                elif pa < pb:
+                    l += qa * qb
+                else:
+                    t += qa * qb
+        rounds += 1
+        if t >= 1 - 1e-12:                 # 위력이 고정이고 같음 → 영원히 동점
+            log.append(("=", len(la), len(lb)))
+            break
+        r = choose(toss, [w, l, t])
+        if r == 0:
+            lb.pop(0)
+        elif r == 1:
+            la.pop(0)
+        log.append(("A" if r == 0 else "B" if r == 1 else "=", len(la), len(lb)))
+
+    if bool(la) == bool(lb):
+        return ClashOutcome(None, rounds, [], None, log)
+    win, lose, w_ast, left = (a, b, a_ast, la) if la else (b, a, b_ast, lb)
+    # [확인 필요] 정신력 변화 시점: 합 종료 직후, 공격 전 (공격 단계 앞면 확률에 반영됨). 패배 측 변화는 미정 → 0
+    gain = params.sanity_clash_win_base * (1 + params.sanity_clash_step * (rounds - 1))
+    rt.change(battle, win.actor, ("field", "sanity"), gain, source=win.actor)
+    rt.emit(battle, "clash_win", action=win)
+    rt.emit(battle, "clash_lose", action=lose)
+    res = _attack(rt, battle, win, w_ast, lose.actor, toss, params, left, clash_count=rounds)
+    return ClashOutcome(win.actor.name, rounds, left, res, log)
 
 
 # ── 정확 열거 ────────────────────────────────────────────────────────────────
@@ -152,11 +283,13 @@ class Outcome:
     heads: tuple
 
 
-def enumerate_outcomes(fn: Callable[[Toss], tuple[Battle, object]]) -> list[Outcome]:
+def enumerate_outcomes(fn: Callable[[Toss], tuple[Battle, object]], min_prob: float = 0.0) -> list[Outcome]:
     """fn(toss) 를 코인 결과 경우마다 다시 실행해 모든 분기를 확률과 함께 돌려준다.
 
     코인 수가 실행 중에 바뀌어도(재사용 등) 동작한다: 앞 결과를 고정한 접두사로 재실행하고,
     새로 나온 토스 위치마다 뒷면 분기를 추가한다.
+    min_prob > 0 이면 도달 확률이 그보다 작은 분기를 버린다 (합의 연속 동점처럼 끝없는 분기용).
+    버린 확률은 1 - Σ prob 로 확인한다.
     """
     out: list[Outcome] = []
     stack: list[list[bool]] = [[]]
@@ -175,8 +308,11 @@ def enumerate_outcomes(fn: Callable[[Toss], tuple[Battle, object]]) -> list[Outc
         for v, p in trace:
             prob *= p if v else (1 - p)
         out.append(Outcome(prob, battle, result, tuple(v for v, _ in trace)))
-        for i in range(len(prefix), len(trace)):
-            stack.append([v for v, _ in trace[:i]] + [False])
+        reach = 1.0
+        for i, (v, p) in enumerate(trace):
+            if i >= len(prefix) and reach * (1 - p) > min_prob:
+                stack.append([x for x, _ in trace[:i]] + [False])
+            reach *= p if v else (1 - p)
     return out
 
 
@@ -200,3 +336,13 @@ def simulate_action(rt: Runtime, battle: Battle, actor: str, skill_key: tuple, t
         r = run_action(rt, b, by[actor], skill_key, by[target], toss, params)
         return b, r
     return enumerate_outcomes(fn)
+
+
+def simulate_clash(rt: Runtime, battle: Battle, a: str, a_key: tuple, b: str, b_key: tuple,
+                   params: Params = DEFAULT, min_prob: float = 1e-7) -> list[Outcome]:
+    """battle 은 그대로 두고, 복제본에서 합 1회(+ 승자 공격)를 경우마다 실행. result = ClashOutcome."""
+    def fn(toss):
+        bt = battle.clone()
+        by = {u.name: u for u in bt.units}
+        return bt, run_clash(rt, bt, by[a], a_key, by[b], b_key, toss, params)
+    return enumerate_outcomes(fn, min_prob)
