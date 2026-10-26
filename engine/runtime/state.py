@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 # charge 계열: 횟수가 0이어도 상태가 남고(위력 유지), 상태가 없을 때 횟수 증가로 생성된다 (docs/07 §4)
 CHARGE_KINDS = {"charge", "special_charge"}
-BUILTIN_KINDS = {"충전": "charge"}
 
 
 @dataclass
@@ -41,6 +40,7 @@ class Unit:
     hp: float = 100
     shield: float = 0
     sanity: float = 0
+    has_sanity: bool = True                    # False = 정신력 없는 적 (정신력 피해 → 우울 피해)
     speed: float = 0
     def_level: float = 0
     formation: int = 0

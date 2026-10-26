@@ -13,7 +13,7 @@ from .state import SkillData, Unit
 
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / "data" / "gesellschaft.db"
-SPEC_DIRS = [ROOT.parent / "lpdlc-v2" / "examples"]
+SPEC_DIRS = [ROOT.parent / "lpdlc-v2" / "keywords", ROOT.parent / "lpdlc-v2" / "examples"]
 
 
 def _level(text: str | None) -> int:
@@ -59,5 +59,5 @@ def load_unit(identity_id: int, *, uptie: int = 4, db: Path = DB, name: str | No
 
 def dummy(name: str = "허수아비", *, def_level: float = 0, hp: float = 10**9, res: str = "보통") -> Unit:
     """합을 하지 않는 허수아비. def_level=0 이면 공격 레벨과 같게 맞춰 공방 항을 0으로 만든다(run_action 참고)."""
-    return Unit(name=name, side="enemy", max_hp=hp, hp=hp, def_level=def_level,
+    return Unit(name=name, side="enemy", max_hp=hp, hp=hp, def_level=def_level, has_sanity=False,
                 phys_res={"참격": res, "관통": res, "타격": res})

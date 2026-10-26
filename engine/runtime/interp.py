@@ -13,7 +13,7 @@ from typing import Callable
 
 from lpdl import ast as A
 
-from .state import BUILTIN_KINDS, CHARGE_KINDS, Battle, SkillData, Status, Unit
+from .state import CHARGE_KINDS, Battle, SkillData, Status, Unit
 
 ACTION_EVENTS = {"before_use", "use", "before_attack", "attack_end", "kill", "clash_start", "clash_win",
                  "clash_lose", "coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail"}
@@ -72,6 +72,7 @@ class Frame:
     target: Unit | None = None
     attacker: Unit | None = None
     action: Action | None = None
+    cause: Action | None = None          # 이 이벤트를 일으킨 다른 유닛의 행동 (피격 시 등) — 피해 집계용
     ev: Event | None = None
     scope: str = "action"                # action | coin | event | static | target_static
     aliases: dict = field(default_factory=dict)
@@ -99,7 +100,7 @@ class Runtime:
         k = self.keywords.get(kw)
         if k is not None:
             return str(k.props.get("kind", "status"))
-        return BUILTIN_KINDS.get(kw, "status")
+        return "status"
 
     def prop(self, kw: str, name: str):
         k = self.keywords.get(kw)
@@ -143,7 +144,7 @@ class Runtime:
             else:
                 frame = Frame(battle, u, target=(action.target if action and u is action.actor else target),
                               attacker=(action.actor if action and name == "hit_taken" else None),
-                              action=(action if action and u is action.actor else None), ev=ev,
+                              action=(action if action and u is action.actor else None), cause=action, ev=ev,
                               aliases=self.aliases_for(u))
             ident = self.identities.get(u.identity_id)
             if ident is not None:
@@ -324,12 +325,15 @@ class Runtime:
                         amt_u = amt * (1 + DEFAULT.res_delta[u.sin_res.get(s.damage_type, "보통")])
                     else:
                         amt_u = amt
-                    if s.damage_type == "stagger":
+                    if s.damage_type == "sanity" and not u.has_sanity:     # 정신력 없는 대상 → 우울 피해
+                        amt_u = amt * (1 + DEFAULT.res_delta[u.sin_res.get("우울", "보통")])
+                        self.damage(u, amt_u, f.action or f.cause)
+                    elif s.damage_type == "stagger":
                         u.stagger_damage += amt_u
                     elif s.damage_type == "sanity":
-                        u.sanity -= amt_u
+                        u.sanity = max(-45, u.sanity - amt_u)
                     else:
-                        self.damage(u, amt_u, f.action)
+                        self.damage(u, amt_u, f.action or f.cause)
             case A.Replace():
                 dest = (s.dest.slot, s.dest.variant)
                 if s.source is None:
@@ -556,7 +560,7 @@ class Runtime:
         unit.shield -= absorbed
         unit.hp = max(0, unit.hp - (amt - absorbed))
         unit.damage_taken += amt
-        if action is not None:
+        if action is not None and unit is not action.actor:     # 출혈 등 자기 피해는 행동 피해에 넣지 않음
             action.damage += amt
 
     # ── 참조 해석 ──

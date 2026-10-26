@@ -56,16 +56,10 @@ def combat_end(rt: Runtime, battle: Battle):
     rt.emit(battle, "combat_end")
 
 
-# 턴 종료 시 내장 감소 (M1: 키워드 정의에 감소 규칙이 없는 표준 상태만)
-BUILTIN_TURN_END_DECAY = {"진동": 1, "충전": 1}
-
-
 def turn_end(rt: Runtime, battle: Battle):
+    """턴 종료시. 표준 상태의 감소·화상 피해는 lpdlc-v2 keywords/standard.lpdl 의 turn_end 블록."""
     rt.emit(battle, "turn_end")
     for u in battle.units:
-        for kw, n in BUILTIN_TURN_END_DECAY.items():
-            if kw in u.statuses:
-                rt.change(battle, u, ("status", kw, "count"), -n, source=None)
         u.skill_override.clear()
     battle.turn += 1
 
