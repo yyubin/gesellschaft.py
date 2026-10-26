@@ -97,6 +97,45 @@ def test_clash_win_lose_events():
     assert b.shield == pytest.approx(50 - 10 * 1.01)        # [합 패배시] 보호막이 이어지는 공격(1합 보너스)을 흡수
 
 
+def test_use_before_clash_before_attack_only_for_winner_after_clash():
+    """[사용시] = 합 전 양쪽, [공격 시작 전] = 합 승리 후 공격 직전 (패자 없음).
+    [사용시]에 얻은 보호막 1 은 합 중이라 그대로, 승자는 [합 승리시] 다음 [공격 시작 전]에 정신력 확인."""
+    rt = runtime('identity 1 { skill S1 { on use { gain self.shield 1 } '
+                 'on before_attack when self.sanity > 0 { gain self.shield 10 } } }')
+    a, b = unit("A", 10, 0, 1, ident=1), unit("B", 1, 0, 1, side="enemy", ident=1)
+    run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert a.shield == 1 + 10                    # 정신력 증가(합 종료) 뒤에 [공격 시작 전]
+    assert b.shield == pytest.approx(max(0, 1 - 10 * 1.01))   # 패자: [사용시] 만, 보호막은 공격에 흡수
+
+
+def test_skill_and_coin_effects_do_not_fire_during_clash_rounds():
+    """스킬·코인 효과는 합 중이 아니라 합을 끝낸 뒤 공격할 때만. 2합(코인 2개 판정 ×2라운드)이어도 공격 때 코인당 1회."""
+    rt = runtime('identity 1 { skill S1 { on coin_flip { gain self.shield 100 } '
+                 'coin 1 { on coin_flip { gain self.shield 1 } } coin 2 { on coin_flip { gain self.shield 1 } } } }')
+    a, b = unit("A", 10, 0, 2, ident=1), unit("B", 5, 0, 2, side="enemy")
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert o.rounds == 2
+    assert a.shield == (100 + 1) * 2
+
+
+def test_one_sided_before_attack_after_use():
+    rt = runtime('identity 1 { skill S1 { on use { gain self.sanity 5 } '
+                 'on before_attack when self.sanity == 5 { gain self.shield 3 } } }')
+    a, b = unit("A", 10, 0, 1, ident=1), unit("B", 1, 0, 1, side="enemy")
+    run_action(rt, Battle([a, b]), a, ("S1", 0), b, HEADS)
+    assert a.shield == 3
+
+
+def test_counter_skill_can_crit():
+    """반격 스킬 적중에도 치명타 (사용자 확인)."""
+    rt = runtime()
+    a = unit("A", 10, 0, 1, statuses={"호흡": Status(potency=20, count=1)})
+    a.skills = {("DEF", 0): SkillData("DEF", 0, "반격", None, "반격", base=10, coin_power=0, coins=1, level=50)}
+    b = unit("B", 1, 0, 1, side="enemy")
+    r = run_action(rt, Battle([a, b]), a, ("DEF", 0), b, HEADS)
+    assert r.crits == {1: True}
+
+
 def test_poise_crit_chance_and_count():
     """호흡 위력 10 → 치명타 50%. 피해 10 → 치명타 시 ×(1 + 0.2). 치명타 발동 후 횟수 -1."""
     rt = runtime()

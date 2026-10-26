@@ -115,9 +115,13 @@ class Runtime:
 
     # ── 이벤트 디스패치 ──
     def emit(self, battle: Battle, name: str, *, actor: Unit | None = None, target: Unit | None = None,
-             action: Action | None = None, ev: Event | None = None, units: list[Unit] | None = None):
-        """핸들러 순서: 행동 스킬 블록 → 현재 코인 블록 → (편성 순) 유닛별 패시브 → 보유 키워드 정의."""
-        if action is not None:
+             action: Action | None = None, ev: Event | None = None, units: list[Unit] | None = None,
+             skill_blocks: bool = True):
+        """핸들러 순서: 행동 스킬 블록 → 현재 코인 블록 → (편성 순) 유닛별 패시브 → 보유 키워드 정의.
+
+        skill_blocks=False: 행동 스킬·코인 블록은 건너뛴다 (합 라운드의 코인 판정).
+        """
+        if action is not None and skill_blocks:
             skill = self.skill_ast(action.actor, action.skill)
             if skill is not None:
                 base = Frame(battle, action.actor, target=action.target, action=action, ev=ev,

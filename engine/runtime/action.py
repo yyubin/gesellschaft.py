@@ -94,7 +94,7 @@ def _chance(toss: Toss, p: float) -> bool:
 
 
 def _begin(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: Unit) -> tuple[Action, object]:
-    """[사용전] → [사용시] → 상시 효과 → [공격 시작 전]. 일방 공격과 합에서 같다."""
+    """[사용전] → [사용시] → 상시 효과. 일방 공격 직전 / 합 시작 전 (스킬을 '사용'하는 시점)."""
     key = actor.skill_override.get(skill_key, skill_key)
     rt._action_seq += 1
     a = Action(rt._action_seq, actor, target, actor.skills[key])
@@ -109,16 +109,18 @@ def _begin(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: U
         rt.run_static(battle, actor, a.mods, action=a, skill=skill_ast)
     rt.run_static(battle, actor, a.mods, action=a)                 # 공격자 패시브·키워드 상시 효과
     rt.run_static(battle, target, a.target_mods)                   # 대상 상시 효과 (방어 레벨 등)
-
-    rt.emit(battle, "before_attack", action=a)
-    rt.emit(battle, "ally_before_attack", actor=actor)
     return a, skill_ast
 
 
 def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, toss: Toss, params: Params,
             coins: list[int], clash_count: int = 0) -> ActionResult:
-    """공격 단계: coins(남은 코인 번호)를 순서대로 토스해 적중. 코인 k 위력 = 기본 + 남은 코인 중 k번째까지 앞면 합."""
+    """공격 단계: coins(남은 코인 번호)를 순서대로 토스해 적중. 코인 k 위력 = 기본 + 남은 코인 중 k번째까지 앞면 합.
+
+    [공격 시작 전] 은 여기서 발생 — 일방 공격 직전, 합은 승리 후 공격 직전 (패자는 발생하지 않음).
+    """
     actor, sk = a.actor, a.skill
+    rt.emit(battle, "before_attack", action=a)
+    rt.emit(battle, "ally_before_attack", actor=actor)
     heads: dict[int, bool] = {}
     crits: dict[int, bool] = {}
     i = 0
@@ -224,8 +226,9 @@ def run_clash(rt: Runtime, battle: Battle, a_unit: Unit, a_key: tuple, b_unit: U
               params: Params = DEFAULT, max_rounds: int = 100) -> ClashOutcome:
     """A 와 B 가 서로를 대상으로 합 → 승자가 남은 코인으로 패자를 공격.
 
-    라운드마다 양쪽 남은 코인을 모두 토스(코인마다 [코인 판정 시] 발생 — 출혈 등), 위력이 낮은 쪽 첫 코인 파괴,
+    라운드마다 양쪽 남은 코인을 모두 토스, 위력이 낮은 쪽 첫 코인 파괴,
     동점이면 둘 다 보존하고 다시 비교. 라운드 결과는 승/패/동점 세 갈래로만 열거한다 (위력 분포로 확률 계산).
+    합 중 코인 판정: 스킬·코인 효과는 발동하지 않고(공격 단계에서만), 패시브·키워드(출혈 등)만 반응한다.
     """
     a, a_ast = _begin(rt, battle, a_unit, a_key, b_unit)
     b, b_ast = _begin(rt, battle, b_unit, b_key, a_unit)
@@ -238,7 +241,7 @@ def run_clash(rt: Runtime, battle: Battle, a_unit: Unit, a_key: tuple, b_unit: U
         for x, left in ((a, la), (b, lb)):
             for k in left:
                 x.coin = k
-                rt.emit(battle, "coin_flip", action=x)
+                rt.emit(battle, "coin_flip", action=x, skill_blocks=False)
             x.coin = None
         da = _clash_power_dist(rt, battle, a, a_ast, la, params)
         db = _clash_power_dist(rt, battle, b, b_ast, lb, params)
