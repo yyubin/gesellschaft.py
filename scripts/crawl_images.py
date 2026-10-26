@@ -1,24 +1,27 @@
 """게임 기본 이미지 수집 → data/raw/images/ → Cloudflare R2 업로드.
 
-출처는 모두 baslimbus.info (docs/06-images.md 참고).
+출처는 baslimbus.info, 거기 없는 키워드 아이콘만 limbuscompany.wiki.gg (docs/06-images.md 참고).
+저장 형식은 모두 PNG로 통일한다 (webp 원본은 Pillow로 무손실 변환, 원본이 PNG면 바이트 그대로).
   sin       죄악 속성 아이콘 7종     {SITE}/assets/resource/{Wrath|Lust|...}.webp
   attack    공격/방어 유형 아이콘 6종 {SITE}/assets/attackType/{slash|pierce|blunt|Guard|Evade|Counter}.webp
   identity  인격 일러스트 (기본/동기화 후)  raw JSON beforeImage / afterImage (image.baslimbus.info)
   skill     인격 스킬 아이콘          {SITE}/assets/drive/sinners/{Sinner}/{Identity}/{prefix}{seq:02}[ N].png
             (프론트 JS와 같은 후보 순서로 시도, 첫 번째로 받아지는 파일 사용)
   keyword   키워드/상태 아이콘        {SITE}/assets/keyword/{한글 이름}.webp
+                                      없으면 {WIKI}/images/{영문 파일}.png (WIKIGG_KEYWORD 표)
   ego       E.G.O 일러스트            raw JSON image / zoomImage / corImage
 
-R2 키 레이아웃 (ASCII만 사용, 로컬 data/raw/images/ 아래도 같은 경로):
-  sin/{wrath|lust|sloth|gluttony|gloom|pride|envy}.webp
-  attack/{slash|pierce|blunt}.webp, defense/{guard|evade|counter}.webp
-  identity/{id}/{normal|after}.webp
+R2 키 레이아웃 (ASCII만 사용, 전부 .png, 로컬 data/raw/images/ 아래도 같은 경로):
+  sin/{wrath|lust|sloth|gluttony|gloom|pride|envy}.png
+  attack/{slash|pierce|blunt}.png, defense/{guard|evade|counter}.png
+  identity/{id}/{normal|after}.png
   skill/{identity_id}/{s1|s2|s3|def}-v{variant}-u{uptie}.png   (DB skill 행의 owner_id, slot, variant, uptie와 1:1)
-  keyword/{english-slug | kw-<sha1 10자>}.webp                 (한글 이름 ↔ 키는 manifest의 key 필드)
-  ego/{id}/{image|zoom|corrosion}.webp
+  keyword/{english-slug | kw-<sha1 10자>}.png                  (한글 이름 ↔ 키는 manifest의 key 필드)
+  ego/{id}/{image|zoom|corrosion}.png
 
 상태: data/raw/images/manifest.json  (build_db.py가 `image` 테이블로 적재, 이 스크립트도 끝나면 DB에 동기화)
-  items[r2_key]  = {kind, owner_type, owner_id, key, source_url, sha256, width, height, bytes, uploaded_sha256, uploaded_at}
+  items[r2_key]  = {kind, owner_type, owner_id, key, source_url, source_format, sha256, width, height, bytes,
+                    uploaded_sha256, uploaded_at}       (sha256/bytes는 저장된 PNG 기준)
   missing[url]   = 404 확인 날짜 (다음 실행에서 다시 요청하지 않음, --refresh로 재시도)
 
 R2 자격 증명은 환경 변수 또는 프로젝트 루트 .env 에서만 읽는다:
@@ -33,6 +36,7 @@ R2 자격 증명은 환경 변수 또는 프로젝트 루트 .env 에서만 읽�
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -51,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_db  # noqa: E402  (ID_SLOTS, variants, image 테이블 DDL 재사용)
 
 SITE = "https://baslimbus.info"
+WIKI = "https://limbuscompany.wiki.gg"
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 IMG_DIR = RAW / "images"
@@ -84,6 +89,19 @@ KEYWORD_SLUGS = {
     "공격 레벨 증가": "offense-level-up", "공격 레벨 감소": "offense-level-down",
     "방어 레벨 증가": "defense-level-up", "방어 레벨 감소": "defense-level-down",
 }
+# baslimbus에 아이콘이 없는 키워드 → wiki.gg 파일 이름 (게임 안에서 "~ 횟수"는 본 상태와 같은 아이콘)
+WIKIGG_KEYWORD = {
+    "출혈 횟수": "Bleed", "화상 횟수": "Burn", "진동 횟수": "Tremor", "파열 횟수": "Rupture",
+    "침잠 횟수": "Sinking", "호흡 횟수": "Poise",
+    **{f"{ko} 위력 증가": f"{en}_Power_Up" for ko, en in SINS},
+    **{f"{ko} 위력 감소": f"{en}_Power_Down" for ko, en in SINS},
+    **{f"{ko} 위력 증가": f"{en.capitalize()}_Power_Up" for ko, en, g in ATTACKS if g == "attack"},
+    **{f"{ko} 위력 감소": f"{en.capitalize()}_Power_Down" for ko, en, g in ATTACKS if g == "attack"},
+    # 인격 고유 (wiki.gg 인격 페이지의 StatusEffect 이름과 대조)
+    "본국검 - 진전 전수": "Sword_of_the_Homeland_-_The_True_Essence",   # #88, #194
+    "양극성": "Duality", "표류 관성": "Inertia_of_Drifting", "마름질 표식": "Mark_of_Shearing",  # #203
+    "두 가위": "Second_is_Welcome-snipping", "꽃가위": "Blossom_Scissors",                    # #203
+}
 SAFE_KEY = re.compile(r"^[a-z0-9][a-z0-9/_.-]*$")
 
 
@@ -110,9 +128,9 @@ def keyword_slug(name: str) -> str:
     return "kw-" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
 
 
-def r2_key(kind: str, ext: str = ".webp", **kw) -> str:
-    """카테고리별 R2 키. ASCII 소문자/숫자/`/_.-`만 나오도록 보장한다."""
-    ext = ext.lower()
+def r2_key(kind: str, **kw) -> str:
+    """카테고리별 R2 키. ASCII 소문자/숫자/`/_.-`만 나오도록 보장한다. 형식은 항상 PNG."""
+    ext = ".png"
     if kind == "sin":
         k = f"sin/{kw['en'].lower()}{ext}"
     elif kind == "attack":
@@ -130,6 +148,13 @@ def r2_key(kind: str, ext: str = ".webp", **kw) -> str:
     if not SAFE_KEY.match(k):
         raise ValueError(f"unsafe key {k!r}")
     return k
+
+
+def keyword_candidates(name: str) -> list:
+    out = [f"{SITE}/assets/keyword/{js_uri(name)}.webp"]
+    if name in WIKIGG_KEYWORD:
+        out.append(f"{WIKI}/images/{urllib.parse.quote(WIKIGG_KEYWORD[name])}.png")
+    return out
 
 
 def js_uri(s: str) -> str:
@@ -222,7 +247,9 @@ def skill_targets(d: dict) -> list:
     sinner, ident = (d.get("characterEn") or "").strip(), (d.get("nameEn") or "").strip()
     if not prefix or not sinner or not ident:
         return []
-    base = f"{SITE}/assets/drive/sinners/{js_uri(normalize_folder(sinner))}/{js_uri(normalize_folder(ident))}/"
+    # 폴더명: nameEn 그대로(프론트 기본) → 밑줄을 공백으로 바꾼 것(프론트 S(), 예: #63 "Seven_Assoc._South_Section_6")
+    folders = list(dict.fromkeys(normalize_folder(x) for x in (ident, ident.replace("_-_", " - ").replace("_", " "))))
+    bases = [f"{SITE}/assets/drive/sinners/{js_uri(normalize_folder(sinner))}/{js_uri(f)}/" for f in folders]
     variant_of = {}
     for key, slot in build_db.ID_SLOTS:
         for v, s in build_db.variants(d.get(key) or [], "level"):
@@ -231,13 +258,13 @@ def skill_targets(d: dict) -> list:
     for slot, g, rank, count in skill_groups(d):
         for s in g:
             uptie = s.get("level") or 3
-            k = r2_key("skill", ".png", id=d["id"], slot=slot, variant=variant_of[id(s)], uptie=uptie)
+            k = r2_key("skill", id=d["id"], slot=slot, variant=variant_of[id(s)], uptie=uptie)
             if k in seen:
                 continue
             seen.add(k)
             files = skill_file_candidates(prefix, s.get("skillSeq") or 0, 1 if uptie >= 4 else 0, rank, count)
             out.append(Target("skill", "identity", d["id"], f"{slot} v{variant_of[id(s)]} u{uptie} {s['name']}",
-                              k, [base + js_uri(f) for f in files]))
+                              k, [b + js_uri(f) for b in bases for f in files]))
     return out
 
 
@@ -260,14 +287,13 @@ def plan(kind: str) -> list:
                 u = (d.get(f) or "").strip()
                 if u:
                     out.append(Target("identity", "identity", d["id"], variant,
-                                      r2_key("identity", ext_of(u), id=d["id"], variant=variant), [u]))
+                                      r2_key("identity", id=d["id"], variant=variant), [u]))
         return out
     if kind == "skill":
         return [t for d in load_raw("identity") for t in skill_targets(d)]
     if kind == "keyword":
         names = json.loads((RAW / "keyword_dict.json").read_text(encoding="utf-8"))
-        return [Target("keyword", None, None, n, r2_key("keyword", name=n), [f"{SITE}/assets/keyword/{js_uri(n)}.webp"])
-                for n in names]
+        return [Target("keyword", None, None, n, r2_key("keyword", name=n), keyword_candidates(n)) for n in names]
     if kind == "ego":
         out = []
         for d in load_raw("ego"):
@@ -275,7 +301,7 @@ def plan(kind: str) -> list:
                 u = (d.get(f) or "").strip()
                 if u and ext_of(u, "") in CONTENT_TYPES:   # corImage는 파일명 없이 폴더만 있는 경우가 많다
                     out.append(Target("ego", "ego", d["id"], variant,
-                                      r2_key("ego", ext_of(u), id=d["id"], variant=variant), [u]))
+                                      r2_key("ego", id=d["id"], variant=variant), [u]))
         return out
     raise ValueError(kind)
 
@@ -348,6 +374,57 @@ def image_size(b: bytes):
     return None, None
 
 
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def source_format(b: bytes) -> str:
+    if b[:8] == PNG_SIG:
+        return "png"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "webp"
+    if b[:2] == b"\xff\xd8":
+        return "jpeg"
+    if b[:4] == b"GIF8":
+        return "gif"
+    return "unknown"
+
+
+def to_png(b: bytes) -> bytes:
+    """PNG면 그대로, 아니면 Pillow로 변환 (알파 유지, 무손실)."""
+    if b[:8] == PNG_SIG:
+        return b
+    from PIL import Image
+    with Image.open(io.BytesIO(b)) as im:
+        im.load()
+        if im.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+            im = im.convert("RGBA" if "A" in im.getbands() or im.info.get("transparency") is not None else "RGB")
+        out = io.BytesIO()
+        im.save(out, "PNG")
+    return out.getvalue()
+
+
+def migrate_to_png(m: dict) -> int:
+    """예전 실행이 남긴 .webp/.jpg 항목을 PNG로 변환하고 키를 .png로 옮긴다 (이미 옮겼으면 아무것도 안 함)."""
+    n = 0
+    for old in [k for k in m["items"] if not k.endswith(".png")]:
+        e = m["items"].pop(old)
+        new = os.path.splitext(old)[0] + ".png"
+        src, dst = IMG_DIR / old, IMG_DIR / new
+        if src.exists():
+            raw = src.read_bytes()
+            body = to_png(raw)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(body)
+            src.unlink()
+            e.update(source_format=source_format(raw), sha256=hashlib.sha256(body).hexdigest(), bytes=len(body))
+            e["width"], e["height"] = image_size(body)
+        else:  # 로컬 파일이 없으면 다음 다운로드에서 다시 받게 sha256을 비운다
+            e["sha256"] = None
+        m["items"].setdefault(new, e)
+        n += 1
+    return n
+
+
 # ---------------------------------------------------------------- 네트워크
 class NotFound(Exception):
     pass
@@ -362,6 +439,8 @@ def fetch(url: str, retries: int = 3) -> tuple[bytes, str]:
                 body = r.read()
             if not ctype.startswith("image/"):
                 raise NotFound(f"not an image ({ctype})")
+            if source_format(body) == "unknown":   # 0바이트 응답 등 (예: #139 S2 원본 1031102.png)
+                raise NotFound(f"empty or unknown image ({len(body)} B)")
             return body, ctype
         except urllib.error.HTTPError as e:
             if e.code in (403, 404, 410):
@@ -383,12 +462,13 @@ def download(t: Target, m: dict, refresh: bool, stats: dict, by_url: dict):
     if not needs_download(entry, local, refresh):
         stats["cached"] += 1
         return
-    body = None
+    body, fmt = None, None
     for url in t.candidates:
         # 같은 원본을 다른 키(동기화 3/4 공용 스킬 아이콘 등)로 이미 받았으면 네트워크 없이 복사
         src = by_url.get(url)
         if src and not refresh and src.exists():
             body, used = src.read_bytes(), url
+            fmt = (m["items"].get(src.relative_to(IMG_DIR).as_posix()) or {}).get("source_format")
             break
         if url in m["missing"] and not refresh:
             continue
@@ -409,6 +489,8 @@ def download(t: Target, m: dict, refresh: bool, stats: dict, by_url: dict):
         stats["missing"].append(t.r2_key)
         return
     m["missing"].pop(used, None)
+    fmt = fmt or source_format(body)
+    body = to_png(body)
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_bytes(body)
     by_url[used] = local
@@ -416,7 +498,7 @@ def download(t: Target, m: dict, refresh: bool, stats: dict, by_url: dict):
     old = entry or {}
     m["items"][t.r2_key] = {
         "kind": t.kind, "owner_type": t.owner_type, "owner_id": t.owner_id, "key": t.key,
-        "source_url": used, "sha256": hashlib.sha256(body).hexdigest(), "width": w, "height": h,
+        "source_url": used, "source_format": fmt, "sha256": hashlib.sha256(body).hexdigest(), "width": w, "height": h,
         "bytes": len(body), "uploaded_sha256": old.get("uploaded_sha256"), "uploaded_at": old.get("uploaded_at"),
     }
     stats["downloaded"] += 1
@@ -500,6 +582,11 @@ def main(argv=None):
     if bad:
         p.error(f"unknown kind: {sorted(bad)}")
     m = load_manifest()
+    if not a.dry_run:
+        n = migrate_to_png(m)
+        if n:
+            save_manifest(m)
+            print(f"[migrate] {n} files converted to PNG", flush=True)
     targets = {k: plan(k)[: a.limit or None] for k in kinds}
 
     if a.dry_run:

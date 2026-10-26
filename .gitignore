@@ -4,3 +4,7 @@ data/gesellschaft.db
 data/crawl.log
 
 .vscode/
+data/crawl_images.log
+data/raw/images/
+.env
+data/upload.log

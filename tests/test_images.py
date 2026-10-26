@@ -1,5 +1,6 @@
 """scripts/crawl_images.py: R2 키 규칙 + manifest 기반 건너뛰기 로직. 네트워크 접근 없음."""
 import hashlib
+import io
 import struct
 import sys
 from pathlib import Path
@@ -12,13 +13,21 @@ import crawl_images as ci  # noqa: E402
 
 # ---------------------------------------------------------------- 키 규칙
 def test_r2_keys_layout():
-    assert ci.r2_key("sin", en="Gloom") == "sin/gloom.webp"
-    assert ci.r2_key("attack", group="attack", en="slash") == "attack/slash.webp"
-    assert ci.r2_key("attack", group="defense", en="Guard") == "defense/guard.webp"
-    assert ci.r2_key("identity", ".webp", id=204, variant="after") == "identity/204/after.webp"
-    assert ci.r2_key("skill", ".png", id=204, slot="DEF", variant=1, uptie=4) == "skill/204/def-v1-u4.png"
-    assert ci.r2_key("ego", ".webp", id=3, variant="image") == "ego/3/image.webp"
-    assert ci.r2_key("keyword", name="출혈") == "keyword/bleed.webp"
+    assert ci.r2_key("sin", en="Gloom") == "sin/gloom.png"
+    assert ci.r2_key("attack", group="attack", en="slash") == "attack/slash.png"
+    assert ci.r2_key("attack", group="defense", en="Guard") == "defense/guard.png"
+    assert ci.r2_key("identity", id=204, variant="after") == "identity/204/after.png"
+    assert ci.r2_key("skill", id=204, slot="DEF", variant=1, uptie=4) == "skill/204/def-v1-u4.png"
+    assert ci.r2_key("ego", id=3, variant="image") == "ego/3/image.png"
+    assert ci.r2_key("keyword", name="출혈") == "keyword/bleed.png"
+
+
+def test_keyword_wikigg_fallback():
+    c = ci.keyword_candidates("출혈 횟수")
+    assert c[0].startswith(ci.SITE) and c[1] == f"{ci.WIKI}/images/Bleed.png"
+    assert ci.keyword_candidates("우울 위력 증가")[1].endswith("/Gloom_Power_Up.png")
+    assert ci.keyword_candidates("타격 위력 감소")[1].endswith("/Blunt_Power_Down.png")
+    assert len(ci.keyword_candidates("출혈")) == 1         # baslimbus에 있는 건 대체 후보 없음
 
 
 def test_keyword_key_is_ascii_and_stable_for_unknown_names():
@@ -65,6 +74,41 @@ def test_image_size_png_and_webp():
     assert ci.image_size(b"nope") == (None, None)
 
 
+# ---------------------------------------------------------------- PNG 통일
+def _img(fmt: str, mode="RGBA") -> bytes:
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new(mode, (3, 2), (10, 20, 30, 128) if mode == "RGBA" else (10, 20, 30)).save(b, fmt, **({"lossless": True} if fmt == "WEBP" else {}))
+    return b.getvalue()
+
+
+def test_to_png_converts_webp_keeps_alpha_and_passes_png_through():
+    from PIL import Image
+    png = ci.to_png(_img("WEBP"))
+    assert png[:8] == ci.PNG_SIG and ci.image_size(png) == (3, 2)
+    assert Image.open(io.BytesIO(png)).getpixel((0, 0)) == (10, 20, 30, 128)   # 무손실 webp → 알파 그대로
+    src = _img("PNG")
+    assert ci.to_png(src) is src
+    assert ci.source_format(_img("WEBP")) == "webp" and ci.source_format(_img("JPEG", "RGB")) == "jpeg"
+
+
+def test_migrate_to_png(tmp_path, monkeypatch):
+    monkeypatch.setattr(ci, "IMG_DIR", tmp_path)
+    (tmp_path / "sin").mkdir()
+    (tmp_path / "sin/gloom.webp").write_bytes(_img("WEBP"))
+    m = {"items": {"sin/gloom.webp": {"key": "우울", "sha256": "x", "uploaded_sha256": None},
+                   "sin/wrath.webp": {"key": "분노", "sha256": "y"},          # 로컬 파일 없음
+                   "skill/1/s1-v0-u3.png": {"key": "S1", "sha256": "z"}}, "missing": {}}
+    assert ci.migrate_to_png(m) == 2
+    assert sorted(m["items"]) == ["sin/gloom.png", "sin/wrath.png", "skill/1/s1-v0-u3.png"]
+    assert not (tmp_path / "sin/gloom.webp").exists()
+    e = m["items"]["sin/gloom.png"]
+    assert e["sha256"] == hashlib.sha256((tmp_path / "sin/gloom.png").read_bytes()).hexdigest()
+    assert e["source_format"] == "webp" and (e["width"], e["height"]) == (3, 2)
+    assert m["items"]["sin/wrath.png"]["sha256"] is None                       # 다음 실행에서 다시 받음
+    assert ci.migrate_to_png(m) == 0
+
+
 # ---------------------------------------------------------------- manifest 건너뛰기
 def _entry(body: bytes, **kw):
     return {"sha256": hashlib.sha256(body).hexdigest(), "source_url": "https://example/a.webp", **kw}
@@ -103,7 +147,7 @@ def sandbox(tmp_path, monkeypatch):
         calls.append(url)
         if url.endswith("missing.png"):
             raise ci.NotFound("HTTP 404")
-        return b"IMG:" + url.encode(), "image/png"
+        return _img("WEBP" if url.endswith(".webp") else "PNG", "RGB") + url.encode(), "image/png"
 
     monkeypatch.setattr(ci, "fetch", fake_fetch)
     return tmp_path, calls
@@ -123,13 +167,24 @@ def test_download_skips_cached_and_missing(sandbox):
     assert calls == ["https://h/missing.png", "https://h/ok.png"]
     assert st["downloaded"] == 1 and "https://h/missing.png" in m["missing"]
     assert m["items"][t.r2_key]["source_url"] == "https://h/ok.png"
-    assert (tmp / t.r2_key).read_bytes() == b"IMG:https://h/ok.png"
+    assert (tmp / t.r2_key).read_bytes().endswith(b"https://h/ok.png")      # PNG 원본은 바이트 그대로
 
     # 두 번째 실행: 로컬 sha256 일치 → 네트워크 없음
     calls.clear()
     st = _stats()
     ci.download(t, m, False, st, {})
     assert calls == [] and st["cached"] == 1
+
+
+def test_fetch_rejects_empty_body(monkeypatch):
+    class R:
+        headers = {"Content-Type": "image/png"}
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def read(self): return b""
+    monkeypatch.setattr(ci.urllib.request, "urlopen", lambda req, timeout: R())
+    with pytest.raises(ci.NotFound):
+        ci.fetch("https://h/empty.png")
 
 
 def test_download_reuses_same_source_without_network(sandbox):
@@ -146,17 +201,18 @@ def test_download_reuses_same_source_without_network(sandbox):
 
 def test_redownload_keeps_upload_state_for_comparison(sandbox):
     tmp, calls = sandbox
-    m = {"items": {"sin/wrath.webp": {"sha256": "old", "uploaded_sha256": "old", "uploaded_at": "t"}}, "missing": {}}
-    t = ci.Target("sin", None, None, "분노", "sin/wrath.webp", ["https://h/w.webp"])
+    m = {"items": {"sin/wrath.png": {"sha256": "old", "uploaded_sha256": "old", "uploaded_at": "t"}}, "missing": {}}
+    t = ci.Target("sin", None, None, "분노", "sin/wrath.png", ["https://h/w.webp"])
     ci.download(t, m, False, _stats(), {})
-    e = m["items"]["sin/wrath.webp"]
+    e = m["items"]["sin/wrath.png"]
     assert e["uploaded_sha256"] == "old" and ci.needs_upload(e)   # 내용이 바뀌었으니 다시 올려야 함
+    assert (tmp / "sin/wrath.png").read_bytes()[:8] == ci.PNG_SIG and e["source_format"] == "webp"
 
 
 def test_manifest_roundtrip(tmp_path):
     p = tmp_path / "manifest.json"
     m = ci.load_manifest(p)
     assert m["items"] == {} and m["missing"] == {}
-    m["items"]["sin/gloom.webp"] = _entry(b"x", key="우울")
+    m["items"]["sin/gloom.png"] = _entry(b"x", key="우울")
     ci.save_manifest(m, p)
-    assert ci.load_manifest(p)["items"]["sin/gloom.webp"]["key"] == "우울"
+    assert ci.load_manifest(p)["items"]["sin/gloom.png"]["key"] == "우울"

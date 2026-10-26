@@ -74,7 +74,7 @@ CREATE VIRTUAL TABLE effect_fts USING fts5(owner_type, owner_id UNINDEXED, sourc
 # 이미지 (원본 상태는 data/raw/images/manifest.json, 이 테이블은 조회용 사본). crawl_images.py도 재사용
 IMAGE_DDL = """
 CREATE TABLE IF NOT EXISTS image (
-  r2_key TEXT PRIMARY KEY,   -- 예: identity/204/normal.webp, skill/204/s1-v0-u4.png (docs/06-images.md)
+  r2_key TEXT PRIMARY KEY,   -- 예: identity/204/normal.png, skill/204/s1-v0-u4.png (docs/06-images.md)
   kind TEXT,                 -- sin / attack / identity / skill / keyword / ego
   owner_type TEXT, owner_id INTEGER,   -- identity / ego (아이콘류는 NULL)
   key TEXT,                  -- 원래 이름 (우울, 출혈, normal, "S1 v0 u4 스킬명" ...)
