@@ -40,7 +40,7 @@ class Unit:
     hp: float = 100
     shield: float = 0
     sanity: float = 0
-    has_sanity: bool = True                    # False = 정신력 없는 적 (정신력 피해 → 우울 피해)
+    has_sanity: bool = True                    # False = 정신력 없는 적 (정신력 피해 무효, 침잠은 우울 피해)
     speed: float = 0
     def_level: float = 0
     formation: int = 0

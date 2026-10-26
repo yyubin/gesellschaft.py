@@ -19,7 +19,7 @@ ACTION_EVENTS = {"before_use", "use", "before_attack", "attack_end", "kill", "cl
                  "clash_lose", "coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail"}
 COIN_EVENTS = {"coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail", "clash_win", "clash_lose"}
 RESOURCE_EVENTS = {"gained", "consumed", "applied", "burst"}
-UNIT_FIELDS = {"hp", "max_hp", "hp_ratio", "shield", "sanity", "speed", "level", "formation"}
+UNIT_FIELDS = {"hp", "max_hp", "hp_ratio", "shield", "sanity", "has_sanity", "speed", "level", "formation"}
 ALLY_EVENTS = {"ally_hit_taken", "ally_before_attack", "ally_attack_end"}
 SINS = ("분노", "색욕", "나태", "탐식", "우울", "오만", "질투")
 PHYS = {"slash": "참격", "pierce": "관통", "blunt": "타격"}
@@ -325,13 +325,11 @@ class Runtime:
                         amt_u = amt * (1 + DEFAULT.res_delta[u.sin_res.get(s.damage_type, "보통")])
                     else:
                         amt_u = amt
-                    if s.damage_type == "sanity" and not u.has_sanity:     # 정신력 없는 대상 → 우울 피해
-                        amt_u = amt * (1 + DEFAULT.res_delta[u.sin_res.get("우울", "보통")])
-                        self.damage(u, amt_u, f.action or f.cause)
-                    elif s.damage_type == "stagger":
+                    if s.damage_type == "stagger":
                         u.stagger_damage += amt_u
                     elif s.damage_type == "sanity":
-                        u.sanity = max(-45, u.sanity - amt_u)
+                        if u.has_sanity:                    # 정신력 없는 대상에겐 효과 없음 (침잠의 우울 전환은 standard.lpdl)
+                            u.sanity = max(-45, u.sanity - amt_u)
                     else:
                         self.damage(u, amt_u, f.action or f.cause)
             case A.Replace():
@@ -671,7 +669,7 @@ class Runtime:
         return {
             "basic_attack": basic_attack,
             "basic_skill": basic_attack or subject.slot == "DEF",
-            "attack": subject.atk_type in ("참격", "관통", "타격"),
+            "attack": subject.slot != "DEF" and subject.atk_type in ("참격", "관통", "타격"),   # DEF 슬롯은 공격 타입이어도 방어 스킬
             "defense": subject.slot == "DEF",
             "ego": subject.slot == "EGO",
             "counter": subject.atk_type == "반격",

@@ -33,6 +33,16 @@ def test_bleed_damages_attacker_per_coin_flip_and_not_counted_as_attack_damage(r
     assert r.damage == pytest.approx(4 * 3)     # 자기 출혈 피해는 행동 피해에 들어가지 않음
 
 
+@pytest.mark.parametrize("atk_type", ["반격", "회피", "방어", "참격"])
+def test_bleed_does_not_trigger_on_defense_skills(rt, atk_type):
+    """'공격 스킬의 코인 판정 시' — 반격·강화반격 등 DEF 슬롯 스킬은 공격 타입이어도 방어 스킬."""
+    me = unit("me", statuses={"출혈": Status(potency=3, count=2)})
+    me.skills = {("DEF", 0): SkillData("DEF", 0, "d", None, atk_type, base=4, coin_power=0, coins=2, level=50)}
+    foe = unit("foe", side="enemy")
+    run_action(rt, Battle([me, foe]), me, ("DEF", 0), foe, HEADS)
+    assert me.hp == 100 and me.statuses["출혈"].count == 2
+
+
 def test_bleed_does_not_trigger_when_holder_is_hit(rt):
     me, foe = unit("me"), unit("foe", side="enemy", statuses={"출혈": Status(potency=3, count=2)})
     run_action(rt, Battle([me, foe]), me, ("S1", 0), foe, HEADS)
@@ -80,6 +90,15 @@ def test_sinking_on_sanityless_target_becomes_gloom_damage(rt):
     r = run_action(rt, Battle([me, foe]), me, ("S1", 0), foe, HEADS)
     assert foe.sanity == 0
     assert r.damage == pytest.approx(4 * 2 + 3 * 2)     # 스킬도 우울 속성이라 취약 ×2
+
+
+def test_plain_sanity_damage_on_sanityless_target_is_not_converted():
+    """우울 전환은 침잠 고유 효과. 일반 정신력 피해는 정신력 없는 대상에게 효과 없음."""
+    rt1 = Runtime(lpdl.parse("lpdl 2\nidentity 1 { skill S1 { on use { deal target sanity 5 } } }"))
+    foe, me = dummy(), unit("me", identity_id=1)
+    foe.sin_res = {"우울": "취약"}
+    r = run_action(rt1, Battle([me, foe]), me, ("S1", 0), foe, HEADS)
+    assert foe.sanity == 0 and r.damage == pytest.approx(4 * 2)
 
 
 def test_poise_count_decays_at_turn_end(rt):
