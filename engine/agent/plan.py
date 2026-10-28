@@ -20,6 +20,11 @@ JSON 형식
 - turn (현재 턴), hand (손패 카드 이름 목록, hand[0] = 위 칸, hand[1] = 아래 칸 — 수비 스킬은 아래 칸 대신),
   deck (덱에 남은 카드 이름 목록 — 구성만 알고 순서는 모름. 비면 6장 다시 섞임)
 - 함수: count(목록, 카드) (예: count(deck, "S3") == 0), len(목록), min, max
+- 적 의도 (팀전, 선택 전 공개): incoming (나를 노리는 적 주사위 수), incoming_power (그중 가장 센 기대 위력),
+  blockable (나를 노리는 주사위 중 내 속도로 막을 수 있는 수), ally_min_hp (살아 있는 아군 중 가장 낮은 hp_ratio)
+
+대상 (팀전): 규칙에 "target": auto | block | favored | intercept | one_sided (use 와 함께 → 그 카드의 대상,
+use 없이 target 만 → 이후 결정의 대상 방식). 계획에 "default_target" (기본 auto). 뜻은 engine.runtime.turn.target_for
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ from dataclasses import dataclass, field
 from engine.runtime.interp import Runtime
 from engine.runtime.policy import legal_choices
 from engine.runtime.state import Battle, Unit
-from engine.runtime.turn import Choice, choose_target
+from engine.runtime.turn import TARGET_MODES, Choice, expected_power, target_for
 
 CARDS = ("S1", "S2", "S3", "DEF")
 UNIT_ATTRS = {"hp", "max_hp", "hp_ratio", "shield", "sanity", "speed", "stagger"}
@@ -45,6 +50,7 @@ class Rule:
     when: str | None = None
     use: list = field(default_factory=list)
     avoid: list = field(default_factory=list)
+    target: str | None = None
     _expr: ast.AST | None = None
 
 
@@ -54,6 +60,7 @@ class Plan:
     rules: list[Rule]
     default: str | list = "highest"
     hypothesis: str = ""
+    default_target: str = "auto"
 
     @staticmethod
     def from_dict(d: dict) -> "Plan":
@@ -61,30 +68,39 @@ class Plan:
             raise PlanError("계획은 {\"name\", \"rules\": [...], \"default\"} 객체여야 함")
         rules = []
         for i, r in enumerate(d["rules"]):
-            unknown = set(r) - {"when", "use", "avoid", "note"}
+            unknown = set(r) - {"when", "use", "avoid", "target", "note"}
             if unknown:
                 raise PlanError(f"rules[{i}]: 모르는 키 {sorted(unknown)}")
             use, avoid = _cards(r.get("use", []), i), _cards(r.get("avoid", []), i)
-            if not use and not avoid:
-                raise PlanError(f"rules[{i}]: use 나 avoid 중 하나는 있어야 함")
+            tgt = r.get("target")
+            if tgt is not None and tgt not in TARGET_MODES:
+                raise PlanError(f"rules[{i}].target: {TARGET_MODES} 중 하나 (받은 값 {tgt!r})")
+            if not use and not avoid and tgt is None:
+                raise PlanError(f"rules[{i}]: use / avoid / target 중 하나는 있어야 함")
             expr = None
             if r.get("when"):
                 try:
                     expr = ast.parse(r["when"], mode="eval")
                 except SyntaxError as e:
                     raise PlanError(f"rules[{i}].when 문법 오류: {r['when']!r} ({e.msg})") from None
-            rules.append(Rule(r.get("when"), use, avoid, expr))
+            rules.append(Rule(r.get("when"), use, avoid, tgt, expr))
         default = d.get("default", "highest")
         if isinstance(default, list):
             default = _cards(default, "default")
         elif default not in ("highest", "top"):
             raise PlanError(f"default: highest | top | 카드 목록 (받은 값 {default!r})")
-        return Plan(d.get("name", "plan"), rules, default, d.get("hypothesis", ""))
+        dt = d.get("default_target", "auto")
+        if dt not in TARGET_MODES:
+            raise PlanError(f"default_target: {TARGET_MODES} 중 하나 (받은 값 {dt!r})")
+        return Plan(d.get("name", "plan"), rules, default, d.get("hypothesis", ""), dt)
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "hypothesis": self.hypothesis, "default": self.default,
-                "rules": [{k: v for k, v in (("when", r.when), ("use", r.use), ("avoid", r.avoid)) if v}
-                          for r in self.rules]}
+        out = {"name": self.name, "hypothesis": self.hypothesis, "default": self.default,
+               "rules": [{k: v for k, v in (("when", r.when), ("use", r.use), ("avoid", r.avoid), ("target", r.target))
+                          if v} for r in self.rules]}
+        if self.default_target != "auto":
+            out["default_target"] = self.default_target
+        return out
 
 
 def _cards(xs, where) -> list:
@@ -228,21 +244,30 @@ def _unit_attr(v: _UnitView, attr: str, src: str):
 def env_for(rt: Runtime, battle: Battle, u: Unit) -> dict:
     al = rt.aliases_for(u)
     foe = next((e for e in battle.enemies_of(u) if e.hp > 0), None)
+    by = {x.name: x for x in battle.units}
+    inc = [it for it in battle.intents if it.target == u.name]
+    allies = [x for x in battle.allies_of(u) if x.hp > 0]
     return {"self": _UnitView(u, al, rt), "target": _UnitView(foe, al, rt) if foe else None,
-            "turn": battle.turn, "hand": [k[0] for k in u.hand], "deck": [k[0] for k in u.deck]}
+            "turn": battle.turn, "hand": [k[0] for k in u.hand], "deck": [k[0] for k in u.deck],
+            "incoming": len(inc),
+            "incoming_power": max((expected_power(by[it.unit].skills[it.skill]) for it in inc), default=0),
+            "blockable": sum(1 for it in inc if it.speed <= u.speed),
+            "ally_min_hp": min((x.hp_ratio for x in allies), default=0)}
 
 
 # ── 실행 ────────────────────────────────────────────────────────────────────
 @dataclass
 class PlanPolicy:
-    """Policy 호환. 계획 규칙대로 칸을 고른다. 대상 = choose_target (막을 수 있으면 합, 아니면 가로채기, 아니면 첫 적)."""
+    """Policy 호환. 계획 규칙대로 칸과 대상 방식(target)을 고른다. 대상 = target_for (기본 auto = choose_target)."""
     rt: Runtime
     plan: Plan
     fired: dict = field(default_factory=dict)       # 규칙 번호 → 결정한 횟수 (-1 = default)
 
     def __call__(self, battle: Battle, u: Unit) -> Choice:
+        self._mode = None
         c = self._card(battle, u)
-        return Choice(c.card, *choose_target(battle, u))
+        key = ("DEF", 0) if c.card == "DEF" else u.hand[c.card]
+        return Choice(c.card, *target_for(battle, u, key, self._mode or self.plan.default_target))
 
     def _card(self, battle: Battle, u: Unit) -> Choice:
         legal = legal_choices(self.rt, battle, u)
@@ -259,7 +284,12 @@ class PlanPolicy:
             for card in r.use:
                 if card in by_card:
                     self.fired[i] = self.fired.get(i, 0) + 1
+                    if r.target:
+                        self._mode = r.target
                     return by_card[card]
+            if r.target and not r.use and getattr(self, "_mode", None) is None:
+                self._mode = r.target                       # 대상 방식만 정하는 규칙
+                self.fired[i] = self.fired.get(i, 0) + 1
         self.fired[-1] = self.fired.get(-1, 0) + 1
         pool = {k: c for k, c in by_card.items() if k not in avoided and k != "DEF"} or \
             {k: c for k, c in by_card.items() if k != "DEF"} or by_card

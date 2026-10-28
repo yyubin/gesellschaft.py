@@ -98,9 +98,12 @@ class Candidate:
     ablation: list | None = None
 
 
-def _key(plan: P.Plan) -> str:
+def _key(plan) -> str:
     d = plan.to_dict()
-    return json.dumps({"rules": d["rules"], "default": d["default"]}, ensure_ascii=False, sort_keys=True)
+    if "units" in d:                                   # 팀 계획
+        return json.dumps(d["units"], ensure_ascii=False, sort_keys=True)
+    return json.dumps({"rules": d["rules"], "default": d["default"], "target": d.get("default_target")},
+                      ensure_ascii=False, sort_keys=True)
 
 
 @dataclass

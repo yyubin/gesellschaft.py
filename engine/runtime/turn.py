@@ -122,6 +122,46 @@ def choose_target(battle: Battle, u: Unit) -> tuple[str, int]:
     return first_enemy(battle, u), 0
 
 
+TARGET_MODES = ("auto", "block", "favored", "intercept", "one_sided")
+
+
+def expected_power(sk, sanity: float = 0) -> float:
+    """합 위력 기대값 근사 = 기본 + 코인 수 × 코인 위력 × 앞면 확률 (상시 효과·수정치 제외)."""
+    from engine.coins import heads_prob
+    return sk.base + sk.coins * sk.coin_power * heads_prob(sanity)
+
+
+def target_for(battle: Battle, u: Unit, key: tuple | None, mode: str = "auto") -> tuple[str, int]:
+    """대상 방식 (팀 계획의 target):
+    auto = choose_target / block = 나를 노리는 주사위 중 막을 수 있는 것 (없으면 일방) /
+    intercept = 막을 수 있는 주사위 중 가장 센 것 / favored = 막을 수 있는 주사위 중 내 스킬 기대 위력이 같거나 높은 것
+    (나를 노리는 것 우선) / one_sided = 합이 안 되는 주사위 (전부 합이 되면 가장 약한 주사위)."""
+    if mode == "auto" or not battle.intents:
+        return choose_target(battle, u)
+    mine = [it for it in battle.intents if it.speed <= u.speed]
+    rest = [it for it in battle.intents if it.speed > u.speed]
+    pick = None
+    if mode == "block":
+        pool = [it for it in mine if it.target == u.name]
+        pick = max(pool, key=lambda it: _strength(battle, it)) if pool else None
+    elif mode == "intercept":
+        pick = max(mine, key=lambda it: _strength(battle, it)) if mine else None
+    elif mode == "favored" and key is not None:
+        mp = expected_power(u.skills[u.skill_override.get(key, key)], u.sanity)
+        enemy = {x.name: x for x in battle.units}
+        ok = [it for it in mine if mp >= expected_power(enemy[it.unit].skills[it.skill])]
+        if ok:
+            pick = max(ok, key=lambda it: (it.target == u.name, _strength(battle, it)))
+    if pick is not None:
+        return pick.unit, pick.die
+    if rest:
+        return rest[0].unit, rest[0].die
+    if mode == "one_sided" and mine:
+        it = min(mine, key=lambda it: _strength(battle, it))
+        return it.unit, it.die
+    return first_enemy(battle, u), (rest[0].die if rest else 0)
+
+
 def policy_highest(battle: Battle, u: Unit) -> Choice:
     """두 칸 중 높은 스킬 (S3 > S2 > S1, 같으면 위 칸) + choose_target."""
     i = max(range(len(u.hand)), key=lambda j: (u.hand[j][0], -j))

@@ -54,11 +54,19 @@ def main():
     r.add_argument("--games", type=int, default=300)
     r.add_argument("--dev-games", type=int, default=10, help="탐색 차이 수집 판 수 (시나리오마다)")
     r.add_argument("--rollouts", type=int, default=32, help="탐색 결정당 롤아웃 수 (많을수록 이득 추정 노이즈 감소)")
+    t = sub.add_parser("team-guide")
+    t.add_argument("ids", type=int, nargs="+")
+    t.add_argument("--preset", default="hard")
+    t.add_argument("--hp", default="1000,1500,2200", help="보스 체력 시나리오 (쉼표)")
+    t.add_argument("--rounds", type=int, default=4)
+    t.add_argument("--plans", type=int, default=3)
+    t.add_argument("--games", type=int, default=100, help="시나리오마다 판 수")
+    t.add_argument("--rollout-ref", default=None, help="팀 탐색 정책 참고 수치 (설명 문자열)")
     a = sub.add_parser("advise")
     a.add_argument("state", type=Path)
     a.add_argument("--no-llm", action="store_true")
     a.add_argument("--rollouts", type=int, default=64)
-    for p in (g, r, a):
+    for p in (g, r, t, a):
         p.add_argument("--backend", choices=["claude-code", "api"], default="claude-code")
         p.add_argument("--model", default=None)
     args = ap.parse_args()
@@ -71,6 +79,32 @@ def main():
         print(json.dumps({k: v for k, v in out.items() if k != "explanation"}, ensure_ascii=False, indent=2))
         if "explanation" in out:
             print("\n" + out["explanation"])
+        return
+
+    if args.cmd == "team-guide":
+        from engine.runtime.scenarios import preset
+        from .team import TeamPlan, TeamPlanPolicy, evaluate_team
+        from .team_harness import run_team_guide
+        hps = [float(x) for x in str(args.hp).split(",")]
+        team = [load_unit(i, formation=n) for n, i in enumerate(args.ids)]
+        battles = [Battle([*team, preset(args.preset, hp=h)]) for h in hps]
+        boss = battles[0].units[-1]
+        desc = {"체력 시나리오": hps, "주사위": boss.dice, "속도": [boss.speed_min, boss.speed_max],
+                "흐트러짐 선(%)": boss.stagger_lines, "패턴": [boss.skills[k].name for k in boss.pattern],
+                "스킬": {sd.name: {"유형": sd.atk_type, "속성": sd.sin, "기본": sd.base, "코인 위력": sd.coin_power,
+                                 "코인 수": sd.coins} for sd in boss.skills.values()}}
+        base = evaluate_team(rt, battles, lambda: TeamPlanPolicy(rt, TeamPlan("highest", {})), games=args.games)
+        refs = {"highest": base["mean_kill_turn"]}
+        if args.rollout_ref:
+            refs["team_rollout"] = args.rollout_ref
+        print(f"기준: {refs}")
+        run = run_team_guide(rt, battles, args.ids, backend(args.backend, args.model).start,
+                             boss_desc=json.dumps(desc, ensure_ascii=False), refs=refs, rounds=args.rounds,
+                             n_plans=args.plans, games=args.games)
+        out = ROOT / "data" / "agent" / ("team_" + "_".join(map(str, args.ids)))
+        save_guide(run, out)
+        best = run.best
+        print(f"\n최고 팀 계획: {best.plan.name} (점수 {best.result['mean_kill_turn']}) → {out}")
         return
 
     hps = [float(x) for x in str(args.hp).split(",")]

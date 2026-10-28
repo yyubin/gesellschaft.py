@@ -201,3 +201,38 @@ def test_deck_slots_and_count_in_conditions():
     assert P.PlanPolicy(rt, pl)(b, u).card == 0
     with pytest.raises(P.PlanError, match="함수는"):
         P.check_plan(rt, b, u, P.Plan.from_dict({"rules": [{"when": "sum(deck) > 1", "use": ["S1"]}]}))
+
+
+def test_team_plan_targets_and_intent_conditions():
+    """팀 계획: 인격별 규칙 + 대상 방식. one_sided 면 합이 안 되는 주사위, block 이면 나를 노리는 주사위."""
+    from engine.agent.team import TeamPlan, TeamPlanPolicy
+    from engine.runtime.scenarios import boss
+    from engine.runtime.turn import Intent, begin_turn
+    rt = runtime()
+    u = unit()
+    e = boss(hp=1000, dice=2, speed=(4, 4), level=50, def_level=0)
+    b = Battle([u, e])
+    deal_hand(u, random.Random(0))
+    begin_turn(rt, b, random.Random(0))
+    u.speed = 5
+    b.intents = [Intent("보스", 0, ("E1", 0), "u", 4), Intent("보스", 1, ("E3", 0), "u", 9)]
+    tp = TeamPlan.from_dict({"name": "t", "units": {"1": {
+        "rules": [{"when": "incoming == 2 and blockable == 1 and incoming_power > 15", "target": "block"}]}}})
+    assert TeamPlanPolicy(rt, tp).joint(b, [u])["u"].die == 0
+    tp2 = TeamPlan.from_dict({"name": "t", "units": {"1": {"rules": [], "default_target": "one_sided"}}})
+    assert TeamPlanPolicy(rt, tp2).joint(b, [u])["u"].die == 1
+    with pytest.raises(P.PlanError, match="target"):
+        TeamPlan.from_dict({"units": {"1": {"rules": [{"target": "nope"}]}}})
+
+
+def test_team_guide_loop_with_fake_llm(monkeypatch):
+    from engine.agent.team_harness import run_team_guide
+    from engine.runtime.scenarios import boss
+    rt = runtime()
+    monkeypatch.setattr("engine.agent.team_harness.spec_source", lambda rt, i: SRC)
+    battles = [Battle([unit(), boss(hp=200, dice=1, speed=(1, 1), level=50, def_level=0)])]
+    good = {"name": "빌드업", "units": {"1": {"rules": [{"when": "self.기세 < 1", "use": ["S1"]}, {"avoid": ["S1"]}]}}}
+    conv = FakeConv([f"```json\n{json.dumps([good], ensure_ascii=False)}\n```", "# 팀 가이드"])
+    run = run_team_guide(rt, battles, [1], lambda system: conv, boss_desc="{}", refs={}, rounds=1, n_plans=1,
+                         games=20, log=lambda *a: None)
+    assert run.best.plan.name == "빌드업" and run.best.ablation and run.guide == "# 팀 가이드"
