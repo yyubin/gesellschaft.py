@@ -304,8 +304,10 @@ def run_refine(rt: Runtime, battles: list[Battle], identity_id: int, conv_factor
     for it in range(1, iterations + 1):
         best = run.best
         log(f"[반복 {it}] 탐색 차이 수집 — 기준 계획 {best.plan.name}")
-        summ = summarize(collect(rt, battles, best.plan, games=dev_games, rollouts=rollouts))
-        run.rollout_refs.append({"plan": best.plan.name, "plan_turns": best.result.get("by_scenario"),
+        # 반복마다 새 시드 (최고 계획이 그대로여도 다른 장면을 모음)
+        summ = summarize(collect(rt, battles, best.plan, games=dev_games, rollouts=rollouts, seed=1000 * it * 10))
+        run.rollout_refs.append({"policy": "rollout (처치까지 끝까지, 기준 정책 = 이 계획)", "plan": best.plan.name,
+                                 "plan_turns": best.result.get("by_scenario"),
                                  "rollout_turns": summ["rollout_kill_turn"]})
         log(f"  결정 {summ['decisions']}, 차이 {summ['deviations']}, 탐색 처치 턴 {summ['rollout_kill_turn']}")
         if it == 1:

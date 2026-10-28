@@ -17,7 +17,9 @@ JSON 형식
 조건식: 파이썬 식 일부 (and or not, 비교, + - * /, in)
 - self / target (첫 번째 살아 있는 적): hp, max_hp, hp_ratio, shield, sanity, speed, stagger,
   <키워드>.potency / <키워드>.count (상태형), <키워드> (수치형, 예: self.코트). 인격 spec 의 `use` 별칭 사용 가능
-- turn (현재 턴), hand (손패 카드 이름 목록, 예: "S3" in hand)
+- turn (현재 턴), hand (손패 카드 이름 목록, hand[0] = 위 칸, hand[1] = 아래 칸 — 수비 스킬은 아래 칸 대신),
+  deck (덱에 남은 카드 이름 목록 — 구성만 알고 순서는 모름. 비면 6장 다시 섞임)
+- 함수: count(목록, 카드) (예: count(deck, "S3") == 0), len(목록), min, max
 """
 from __future__ import annotations
 
@@ -146,6 +148,22 @@ def evaluate(expr: ast.AST, env: dict, src: str = ""):
                 return n.value
             case ast.List() | ast.Tuple():
                 return [ev(x) for x in n.elts]
+            case ast.Subscript():
+                base = ev(n.value)
+                i = ev(n.slice)
+                if not isinstance(base, list) or not isinstance(i, int):
+                    raise PlanError(f"{src}: [] 는 hand[0] / hand[1] 처럼 목록과 정수에만")
+                return base[i] if -len(base) <= i < len(base) else None
+            case ast.Call():
+                fn = n.func.id if isinstance(n.func, ast.Name) else None
+                args = [ev(a) for a in n.args]
+                if fn == "count" and len(args) == 2 and isinstance(args[0], list):
+                    return args[0].count(args[1])
+                if fn == "len" and len(args) == 1 and isinstance(args[0], list):
+                    return len(args[0])
+                if fn in ("min", "max") and args:
+                    return (min if fn == "min" else max)(_num(a, src) for a in args)
+                raise PlanError(f"{src}: 함수는 count(목록, 카드), len(목록), min, max 만")
             case ast.Name():
                 if n.id in ("True", "False"):
                     return n.id == "True"
@@ -211,7 +229,7 @@ def env_for(rt: Runtime, battle: Battle, u: Unit) -> dict:
     al = rt.aliases_for(u)
     foe = next((e for e in battle.enemies_of(u) if e.hp > 0), None)
     return {"self": _UnitView(u, al, rt), "target": _UnitView(foe, al, rt) if foe else None,
-            "turn": battle.turn, "hand": [k[0] for k in u.hand]}
+            "turn": battle.turn, "hand": [k[0] for k in u.hand], "deck": [k[0] for k in u.deck]}
 
 
 # ── 실행 ────────────────────────────────────────────────────────────────────

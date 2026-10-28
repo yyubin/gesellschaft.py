@@ -29,6 +29,7 @@ def snapshot(b: Battle, u: Unit) -> dict:
     foe = next((e for e in b.enemies_of(u) if e.hp > 0), None)
     r = lambda x: round(x, 2)
     out = {"turn": b.turn, "hand": [u.hand[i][0] for i in range(len(u.hand))],
+           "deck": sorted(k[0] for k in u.deck),
            "self": {**{f"{k}.potency": r(s.potency) for k, s in u.statuses.items()},
                     **{f"{k}.count": r(s.count) for k, s in u.statuses.items()},
                     **{k: r(v) for k, v in u.values.items()}, "sanity": r(u.sanity)}}

@@ -53,6 +53,7 @@ def main():
     r.add_argument("--plans", type=int, default=3)
     r.add_argument("--games", type=int, default=300)
     r.add_argument("--dev-games", type=int, default=10, help="탐색 차이 수집 판 수 (시나리오마다)")
+    r.add_argument("--rollouts", type=int, default=32, help="탐색 결정당 롤아웃 수 (많을수록 이득 추정 노이즈 감소)")
     a = sub.add_parser("advise")
     a.add_argument("state", type=Path)
     a.add_argument("--no-llm", action="store_true")
@@ -86,7 +87,8 @@ def main():
         start = P.Plan.from_dict(json.loads(args.plan.read_text(encoding="utf-8")))
         refs = {"highest": evaluate_set(rt, battles, lambda: policy_highest, games=args.games)["mean_kill_turn"]}
         run = run_refine(rt, battles, args.identity, backend(args.backend, args.model).start, start, refs=refs,
-                         iterations=args.iterations, n_plans=args.plans, games=args.games, dev_games=args.dev_games)
+                         iterations=args.iterations, n_plans=args.plans, games=args.games, dev_games=args.dev_games,
+                         rollouts=args.rollouts)
         out = ROOT / "data" / "agent" / str(args.identity) / "refine"
         save_guide(run, out)
         (out / "rollout_vs_plan.json").write_text(json.dumps(run.rollout_refs, ensure_ascii=False, indent=2),

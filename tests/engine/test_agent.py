@@ -189,3 +189,15 @@ def test_distill_finds_buildup_deviation_and_refine_loop_runs(monkeypatch):
                      dev_games=2, rollouts=4, log=lambda *a: None)
     assert run.best.plan.name == "빌드업"
     assert "patterns" in conv.got[0] and run.guide == "# 가이드"
+
+
+def test_deck_slots_and_count_in_conditions():
+    rt = runtime()
+    u, foe = unit(), dummy()
+    u.hand, u.deck = [("S2", 0), ("S3", 0)], [("S1", 0), ("S1", 0)]
+    b = Battle([u, foe])
+    pl = P.Plan.from_dict({"rules": [{"when": "hand[1] == 'S3' and count(deck, 'S3') == 0 and len(deck) == 2",
+                                      "use": ["S2"]}]})
+    assert P.PlanPolicy(rt, pl)(b, u).card == 0
+    with pytest.raises(P.PlanError, match="함수는"):
+        P.check_plan(rt, b, u, P.Plan.from_dict({"rules": [{"when": "sum(deck) > 1", "use": ["S1"]}]}))
