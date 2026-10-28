@@ -42,6 +42,9 @@ class Unit:
     sanity: float = 0
     has_sanity: bool = True                    # False = 정신력 없는 적 (정신력 피해 무효, 침잠은 우울 피해)
     speed: float = 0
+    dice: int = 1                              # 속도 주사위 수 (적 보스는 여러 개)
+    speeds: list = field(default_factory=list)  # 이번 턴 주사위별 속도 (speeds[0] == speed)
+    pattern: list | None = None                # 적: 스킬 순환 목록 (주사위마다 다음 것). None = 행동 안 함 (허수아비)
     speed_min: int = 0
     speed_max: int = 0
     def_level: float = 0
@@ -94,6 +97,8 @@ class Battle:
     accum: dict = field(default_factory=dict)          # every: (block id, unit) → 누적량
     pending: list = field(default_factory=list)        # next_turn: (turn, callable)
     used_sins: list = field(default_factory=list)      # 이번 턴 사용한 스킬 속성 → 턴 종료 시 sin_owned 에 더함
+    intents: list = field(default_factory=list)        # 이번 턴 적 의도 (turn.Intent) — 선택 전에 공개
+    pattern_pos: dict = field(default_factory=dict)    # 적 이름 → 다음 패턴 위치
     log: list = field(default_factory=list)
 
     def allies_of(self, u: Unit) -> list[Unit]:

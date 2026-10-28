@@ -38,14 +38,15 @@ class Objective:
 def legal_choices(rt: Runtime, battle: Battle, u: Unit) -> list[Choice]:
     """칸 0/1 (같은 카드면 하나만) + 수비 스킬 × 살아 있는 적.
     수비 스킬은 공격하지 않아도 [전투 시작시] 효과나 교체(#204 가호 100 → S3 variant 1)로 의미가 있을 수 있어 항상 후보."""
-    targets = [e.name for e in battle.enemies_of(u) if e.hp > 0]
+    # 대상 = (적, 주사위). 주사위마다 합 가로채기 여부가 달라서 따로 후보
+    targets = [(e.name, d) for e in battle.enemies_of(u) if e.hp > 0 for d in range(e.dice if e.pattern else 1)]
     cards: list = []
     for i, key in enumerate(u.hand):
         if key not in [u.hand[j] for j in cards]:
             cards.append(i)
     if DEF in u.skills:
         cards.append("DEF")
-    return [Choice(c, t) for c in cards for t in targets]
+    return [Choice(c, t, d) for c in cards for t, d in targets]
 
 
 def determinize(battle: Battle, rng: random.Random) -> Battle:

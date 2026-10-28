@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from engine.runtime.interp import Runtime
 from engine.runtime.policy import legal_choices
 from engine.runtime.state import Battle, Unit
-from engine.runtime.turn import Choice
+from engine.runtime.turn import Choice, choose_target
 
 CARDS = ("S1", "S2", "S3", "DEF")
 UNIT_ATTRS = {"hp", "max_hp", "hp_ratio", "shield", "sanity", "speed", "stagger"}
@@ -235,12 +235,16 @@ def env_for(rt: Runtime, battle: Battle, u: Unit) -> dict:
 # ── 실행 ────────────────────────────────────────────────────────────────────
 @dataclass
 class PlanPolicy:
-    """Policy 호환. 계획 규칙대로 칸을 고른다. 대상 = 첫 번째 살아 있는 적."""
+    """Policy 호환. 계획 규칙대로 칸을 고른다. 대상 = choose_target (막을 수 있으면 합, 아니면 가로채기, 아니면 첫 적)."""
     rt: Runtime
     plan: Plan
     fired: dict = field(default_factory=dict)       # 규칙 번호 → 결정한 횟수 (-1 = default)
 
     def __call__(self, battle: Battle, u: Unit) -> Choice:
+        c = self._card(battle, u)
+        return Choice(c.card, *choose_target(battle, u))
+
+    def _card(self, battle: Battle, u: Unit) -> Choice:
         legal = legal_choices(self.rt, battle, u)
         by_card = {}
         for c in legal:
