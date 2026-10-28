@@ -114,3 +114,51 @@ def test_renoir_trio_vs_boss_runs():
             break
     assert "clash" in kinds
     assert battle.units[3].hp < battle.units[3].max_hp
+
+
+def def_ally(name, speed, def_type, base=7):
+    u = ally(name, speed)
+    u.skills[("DEF", 0)] = SkillData("DEF", 0, "d", "분노", def_type, base=base, coin_power=0, coins=1, level=50)
+    return u
+
+
+def test_counter_reacts_to_first_incoming_attack_after_damage():
+    rt = runtime()
+    a = def_ally("A", 1, "반격")
+    e = fixed_boss(speeds=(4, 3))
+    battle, rng = setup(a, boss_unit=e)
+    begin_turn(rt, battle, rng)
+    log = resolve_turn(rt, battle, rng, [a], {"A": Choice("DEF", "보스", 0)})
+    kinds = [(x.unit, x.kind) for x in log.actions]
+    assert kinds == [("보스", "one-sided"), ("A", "counter"), ("보스", "one-sided")]   # 첫 공격에만 반격
+    assert a.hp == 100 - 5 * 2 and e.hp == 1000 - 7
+
+
+def test_guard_shield_absorbs_first_attack():
+    rt = runtime()
+    a = def_ally("A", 1, "방어", base=4)
+    e = fixed_boss(speeds=(4,), base=5)
+    battle, rng = setup(a, boss_unit=e)
+    begin_turn(rt, battle, rng)
+    log = resolve_turn(rt, battle, rng, [a], {"A": Choice("DEF", "보스", 0)})
+    assert [x.kind for x in log.actions] == ["guard", "one-sided"]
+    assert a.hp == 100 - 1
+
+
+def test_use_skill_extra_one_sided_attack():
+    """#204 신의 뜻: 르누아르 아군 공격 시작 전 심판! (S1 variant 1) 추가 공격."""
+    doc = lpdl.merge([lpdl.load([SPEC_DIRS[0]]), lpdl.parse('''lpdl 2
+    identity 1 { passive "p" { on ally_before_attack when target != self limit 1/turn {
+        use_skill S1 variant 1 on pick(enemies, n: 1) } } }''')])
+    assert lpdl.validate(doc).ok
+    rt = Runtime(doc)
+    d = ally("D", 1, identity_id=1)
+    d.skills[("S1", 1)] = SkillData("S1", 1, "심판", "오만", "타격", base=3, coin_power=0, coins=1, level=50)
+    r = ally("R", 5)
+    e = fixed_boss(speeds=(1,))
+    e.pattern = None                                      # 공격 안 함
+    battle, rng = setup(r, d, boss_unit=e)
+    begin_turn(rt, battle, rng)
+    resolve_turn(rt, battle, rng, [r, d], {"R": Choice(0, "보스"), "D": Choice(0, "보스")})
+    assert ("use_skill", "D", ("S1", 1), "보스", 3.0) in battle.log
+    assert e.hp == 1000 - 10 - 3 - 10                    # R 10 + 심판 3 + D 10 (D 의 자기 공격 땐 발동 안 함)

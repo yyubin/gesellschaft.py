@@ -25,3 +25,17 @@ def boss(name: str = "보스", *, hp: float = 1200, dice: int = 2, speed: tuple 
     return Unit(name=name, side="enemy", max_hp=hp, hp=hp, def_level=def_level, has_sanity=False,
                 speed_min=speed[0], speed_max=speed[1], dice=dice, pattern=pat, skills=data,
                 stagger_lines=list(stagger_lines), phys_res={"참격": res, "관통": res, "타격": res})
+
+
+# 르누아르 3인(highest 정책) 기준 조정 (2026-10-28, 200판, 반격·심판! 포함):
+#   basic = 승률 100%, 처치 6.5턴, 남은 체력 97% (생존 영향 거의 없음)
+#   hard  = 승률 98%, 처치 9.5턴, 사망 0.12명, 남은 체력 76% (생존이 결과에 들어감)
+PRESETS = {
+    "basic": {},
+    "hard": {"hp": 1500, "dice": 3, "skills": [("베기", "참격", "분노", 6, 4, 3), ("찌르기", "관통", "색욕", 5, 4, 2),
+                                                ("내려찍기", "타격", "우울", 8, 5, 3)]},
+}
+
+
+def preset(name: str, **kw) -> Unit:
+    return boss(**{**PRESETS[name], **kw})

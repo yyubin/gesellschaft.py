@@ -196,12 +196,6 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
         e = by[it.unit]
         if _can_act(battle, e):
             acts.append(_Act(e, it.die, it.skill, it.target, 0, it.speed, False))
-    for e in (a for a in acts if not a.ally):
-        cands = [a for a in acts if a.ally and a.target == e.unit.name and a.tdie == e.die and a.speed >= e.speed
-                 and attacks(rt, a.unit, a.unit.skill_override.get(a.key, a.key)) and a.pair is None]
-        if cands:
-            a = cands[-1]
-            a.pair, e.pair = e, a
 
     allies = [a for a in acts if a.ally]
     sins = [a.unit.skills[a.unit.skill_override.get(a.key, a.key)].sin for a in allies]
@@ -210,8 +204,21 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
     battle.max_resonance = max(battle.resonance.values(), default=0)
     combat_start(rt, battle, {a.unit.name: [a.key] for a in allies})
     log.shields = {u.name: u.shield for u in battle.units}
+    # 합 짝짓기는 [전투 시작시] 스킬 교체(#204 묵시 → S3 variant 1) 뒤에
+    for e in (a for a in acts if not a.ally):
+        cands = [a for a in acts if a.ally and a.target == e.unit.name and a.tdie == e.die and a.speed >= e.speed
+                 and attacks(rt, a.unit, a.unit.skill_override.get(a.key, a.key)) and a.pair is None]
+        if cands:
+            a = cands[-1]
+            a.pair, e.pair = e, a
 
     toss = lambda p: rng.random() < p
+    rt.current_toss = toss
+    # 공격하지 않는 수비 스킬 (방어·회피·반격): 자기 속도에 행동하지 않고, 이번 턴 자신에게 처음 들어오는 공격에 반응
+    guard = {a.unit.name: a for a in acts if a.ally and not attacks(rt, a.unit, a.unit.skill_override.get(a.key, a.key))}
+    for a in guard.values():
+        a.done = True
+        battle.used_sins.append(a.unit.skills[a.unit.skill_override.get(a.key, a.key)].sin)
     for a in sorted(acts, key=lambda x: -x.speed):             # 안정 정렬: 같은 속도는 아군 → 적, 입력 순서
         if a.done:
             continue
@@ -223,10 +230,6 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
             continue
         target = by[a.target]
         if target.hp <= 0:
-            continue
-        if a.ally and not attacks(rt, u, key):                  # 수비 반응 (방어·회피·반격) 은 M3 2단계
-            battle.used_sins.append(u.skills[key].sin)
-            log.actions.append(ActionLog(u.name, key, a.target, a.speed, 0.0, kind="defend"))
             continue
         p = a.pair
         if p is not None and not p.done and _can_act(battle, p.unit):
@@ -241,10 +244,25 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
                     o.result.damage if (won and o.result) else 0.0, kind="clash",
                     clash={"with": other.unit.name, "winner": o.winner, "rounds": o.rounds}))
             continue
+        g = guard.pop(target.name, None) if not a.ally else None
+        gkey = g.unit.skill_override.get(g.key, g.key) if g else None
+        if g is not None and g.unit.skills[gkey].atk_type == "방어" and _can_act(battle, g.unit):
+            sh = _defense_power(g.unit.skills[gkey], g.unit, toss, params)   # 방어: 위력만큼 보호막 후 피격
+            g.unit.shield += sh
+            log.actions.append(ActionLog(g.unit.name, gkey, u.name, g.speed, 0.0, kind="guard", clash={"shield": sh}))
         r = run_action(rt, battle, u, a.key, target, toss, params)
         if a.ally:
             battle.used_sins.append(u.skills[r.skill].sin)
         log.actions.append(ActionLog(u.name, r.skill, a.target, a.speed, r.damage))
+        if g is not None and g.unit.skills[gkey].atk_type == "반격" and _can_act(battle, g.unit) and u.hp > 0:
+            rc = run_action(rt, battle, g.unit, g.key, u, toss, params)       # 반격: 피해를 받은 뒤 일방 공격
+            log.actions.append(ActionLog(g.unit.name, rc.skill, u.name, g.speed, rc.damage, kind="counter"))
+        elif g is not None and g.unit.skills[gkey].atk_type == "회피":
+            battle.log.append(("evade-unimplemented", g.unit.name))          # [확인 필요] 회피 판정 단위
+    for g in guard.values():                                    # 공격받지 않은 수비 스킬
+        log.actions.append(ActionLog(g.unit.name, g.unit.skill_override.get(g.key, g.key), "", g.speed, 0.0,
+                                     kind="defend"))
+    rt.current_toss = None
 
     combat_end(rt, battle)
     for u in battle.units:
@@ -258,6 +276,13 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
     battle.intents = []
     turn_end(rt, battle)
     return log
+
+
+def _defense_power(sk, u: Unit, toss, params: Params) -> float:
+    """방어 스킬 위력 = 기본 + 앞면 코인 위력 합 (코인 토스, 정신력 앞면 확률)."""
+    from engine.coins import heads_prob
+    p = heads_prob(u.sanity)
+    return max(params.min_power, sk.base + sum(sk.coin_power for _ in range(sk.coins) if toss(p)))
 
 
 def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = policy_highest,

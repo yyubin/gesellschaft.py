@@ -102,6 +102,7 @@ class Runtime:
         # 부모 키워드 정의의 블록(감소 규칙 등)은 물려받지 않음 → 같은 규칙이면 자식에 직접 적는다
         self.parent = {k.name: str(k.props["inherit"]) for k in doc.keywords if "inherit" in k.props}
         self.current_action: Action | None = None   # 진행 중인 행동 (행동 밖 이벤트에서 훅이 참조)
+        self.current_toss = None                    # 진행 중인 턴의 코인 토스 (use_skill 추가 행동용)
         self._kw_order = {k.name: i for i, k in enumerate(doc.keywords)}
         self._ev_cache: dict[int, frozenset] = {}
 
@@ -119,6 +120,10 @@ class Runtime:
         if len(names) > 1:
             names.sort(key=self._kw_order.__getitem__)
         return names
+
+    def use_skill(self, battle: Battle, actor: Unit, key: tuple, target: Unit | None):
+        """use_skill: 다른 스킬을 추가 일방 공격으로 발동 (#204 신의 뜻 → 심판!). action.py 가 구현을 채운다."""
+        battle.log.append(("use_skill-unavailable", actor.name, key))
 
     # ── 키워드 메타 ──
     def ancestors(self, kw: str) -> list[str]:
@@ -397,7 +402,9 @@ class Runtime:
                 if f.action is not None:
                     f.action.reuse += int(self.eval(s.times, f)) if s.times is not None else 1
             case A.UseSkill():
-                f.battle.log.append(("use_skill-pending", f.self_.name, (s.skill.slot, s.skill.variant)))   # M2
+                tgt = self.eval(s.target, f) if s.target is not None else f.target
+                tgt = tgt[0] if isinstance(tgt, list) and tgt else tgt
+                self.use_skill(f.battle, f.self_, (s.skill.slot, s.skill.variant), tgt if isinstance(tgt, Unit) else None)
             case A.Retype():
                 src, dst = self.resolve_kw(s.source, f), self.resolve_kw(s.dest, f)
                 for u in self._units(self.eval(s.target, f)):

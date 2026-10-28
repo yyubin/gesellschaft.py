@@ -354,6 +354,21 @@ def distribution(outcomes: list[Outcome], f: Callable[[Outcome], float]) -> dict
     return dict(sorted(d.items()))
 
 
+def _use_skill(rt: Runtime, battle: Battle, actor: Unit, key: tuple, target: Unit | None):
+    """추가 행동: 진행 중인 행동을 잠시 멈추고 key 스킬로 target 에 일방 공격 (합 불가)."""
+    if rt.current_toss is None or key not in actor.skills or target is None or target.hp <= 0 or actor.hp <= 0:
+        battle.log.append(("use_skill-skipped", actor.name, key))
+        return
+    saved = rt.current_action
+    r = run_action(rt, battle, actor, key, target, rt.current_toss)
+    rt.current_action = saved
+    battle.log.append(("use_skill", actor.name, key, target.name, r.damage))
+    battle.used_sins.append(actor.skills[key].sin)
+
+
+Runtime.use_skill = _use_skill
+
+
 def simulate_action(rt: Runtime, battle: Battle, actor: str, skill_key: tuple, target: str,
                     params: Params = DEFAULT) -> list[Outcome]:
     """battle 은 그대로 두고, 복제본에서 행동 1회를 코인 경우마다 실행."""
