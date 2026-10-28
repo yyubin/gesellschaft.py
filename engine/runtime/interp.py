@@ -59,6 +59,7 @@ class Action:
     deferred: list = field(default_factory=list)                 # (event, body, frame)
     coin: int | None = None
     reuse: int = 0                                              # reuse_coin 대기 횟수
+    last_coin: int | None = None                                # 이번 공격의 마지막 코인 (합에서 파괴되면 남은 것 중)
     coin_heads: dict = field(default_factory=dict)
     coin_power: dict = field(default_factory=dict)
     coin_damage: dict = field(default_factory=dict)
@@ -691,7 +692,8 @@ class Runtime:
             a = f.action
             c = a.coin
             return {"final_damage": a.coin_damage.get(c, 0), "power": a.coin_power.get(c, 0),
-                    "index": c, "is_head": a.coin_heads.get(c, False)}[p[1]]
+                    "index": c, "is_head": a.coin_heads.get(c, False),
+                    "is_last": c is not None and c == (a.last_coin or a.skill.coins)}[p[1]]
         if len(p) == 1:                     # 키워드 이름 (has 등의 인자)
             return self.resolve_kw(p[0], f)
         raise RuntimeError_(f"알 수 없는 참조 {'.'.join(p)} (line {r.line})")

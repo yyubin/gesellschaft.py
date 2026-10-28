@@ -189,3 +189,13 @@ def test_coin_start_fires_once_per_coin_in_attack_after_clash():
     assert o.result.coin_power == {1: 10, 2: 20}
     assert a.statuses["충전"].count == 5
     assert o.result.damage == pytest.approx((10 + 20) * 1.02)
+
+
+def test_last_coin_start_final_power_regardless_of_heads():
+    """[마지막 코인 시작 시] 최종 위력 +4: 기본 4, 코인 3, 3코인 → 코인 3 = 4 + 앞면 합 + 4 (뒷면이어도 +4, 사용자 예시)."""
+    rt = runtime('identity 1 { passive "p" { on coin_start when coin.is_last { modify final_power 4 coins current } } }')
+    a, b = unit("A", 4, 3, 3, ident=1), unit("B", 1, 0, 1, side="enemy")
+    r = run_action(rt, Battle([a, b]), a, ("S1", 0), b, scripted(True, True, False))
+    assert r.coin_power == {1: 7, 2: 10, 3: 14}
+    r = run_action(rt, Battle([a, b]), a, ("S1", 0), b, HEADS)
+    assert r.coin_power == {1: 7, 2: 10, 3: 17}

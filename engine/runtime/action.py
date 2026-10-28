@@ -135,6 +135,7 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
     [공격 시작 전] 은 여기서 발생 — 일방 공격 직전, 합은 승리 후 공격 직전 (패자는 발생하지 않음).
     """
     actor, sk = a.actor, a.skill
+    a.last_coin = coins[-1] if coins else None
     rt.emit(battle, "before_attack", action=a)
     rt.emit(battle, "ally_before_attack", actor=actor)
     heads: dict[int, bool] = {}

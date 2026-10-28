@@ -30,14 +30,6 @@ def coin_power_per_all_targets_vibration_nail_sum(rt, f, per, cap):
         f.action.mods["coin_power"] += min(math.floor(_vib_nail(rt, t) / per), cap)
 
 
-def last_coin_start_final_power(rt, f, amount, cap):
-    """기본 스킬의 마지막 코인 시작 시 최종 위력 +amount (최대 cap).
-    근사: 식을 [사용시]에 평가 (마지막 코인 시작까지 보존 위력·못이 바뀌면 차이). [확인 필요]"""
-    a = f.action
-    if a is not None:
-        a.coin_mods[a.skill.coins]["final_power"] += min(math.floor(amount), cap)
-
-
 def vibration_preserve_burst_sloth_damage(rt, f, base, step, cap):
     """진동 - 보존 폭발 시 위력의 (base + 폭발 일으킨 유닛의 충전 계열 위력 × step)% 나태 피해 (최대 cap%)."""
     ev, u = f.ev, f.self_
@@ -79,7 +71,6 @@ NOOP = [
 
 HOOKS = {
     "coin_power_per_all_targets_vibration_nail_sum": coin_power_per_all_targets_vibration_nail_sum,
-    "last_coin_start_final_power": last_coin_start_final_power,
     "vibration_preserve_burst_sloth_damage": vibration_preserve_burst_sloth_damage,
     "mark_skill_as_charge_consuming": mark_skill_as_charge_consuming,
     **{n: _noop for n in NOOP},
