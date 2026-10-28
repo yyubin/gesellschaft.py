@@ -93,6 +93,18 @@ def _chance(toss: Toss, p: float) -> bool:
     return p >= 1 or (p > 0 and toss(p))
 
 
+def check_stagger(battle: Battle, u: Unit):
+    """직접 피해(코인 적중) 뒤 흐트러짐 선 판정 (docs/rules 4장). 한 번에 깨진 선 수 = 흐트러짐 단계.
+    흐트러진 턴의 남은 행동 취소 + 다음 턴 행동 불가 → 다음 턴 종료 시 회복 (사용자 확인 2026-10-28)."""
+    broken = [x for x in u.stagger_lines if u.hp <= u.max_hp * x / 100]
+    if not broken or u.hp <= 0:
+        return
+    u.stagger_lines = [x for x in u.stagger_lines if x not in broken]
+    u.stagger = min(3, max(u.stagger, len(broken)))
+    u.stagger_until = battle.turn + 1
+    battle.log.append(("stagger", u.name, battle.turn, u.stagger))
+
+
 def _begin(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: Unit) -> tuple[Action, object]:
     """[사용전] → [사용시] → 상시 효과. 일방 공격 직전 / 합 시작 전 (스킬을 '사용'하는 시점)."""
     key = actor.skill_override.get(skill_key, skill_key)
@@ -153,6 +165,7 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
         ctx = HitContext(
             phys_res=target.phys_res.get(sk.atk_type, "보통"),
             sin_res=target.sin_res.get(sk.sin, "보통"),
+            stagger=target.stagger,
             offense_level=level,
             defense_level=(target.def_level or level) + a.target_mods["def_level"],
             crit=crit,
@@ -163,6 +176,7 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
         dmg = hit_damage(power, ctx, params)
         a.coin_damage[k] = a.coin_damage.get(k, 0) + dmg
         rt.damage(target, dmg, a)
+        check_stagger(battle, target)
         rt.emit(battle, "hit", action=a)
         rt.emit(battle, "head_hit" if h else "tail_hit", action=a)
         if crit:

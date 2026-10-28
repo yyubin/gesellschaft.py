@@ -37,6 +37,8 @@ def load_unit(identity_id: int, *, uptie: int = 4, db: Path = DB, name: str | No
         i = con.execute("select * from identity where id=?", (identity_id,)).fetchone()
         if i is None:
             raise KeyError(identity_id)
+        ext = con.execute("select stagger_json from identity_ext where identity_id=?", (identity_id,)).fetchone()
+        stagger = sorted(json.loads(ext["stagger_json"]), reverse=True) if ext and ext["stagger_json"] else []
         tags = con.execute("select kind, value from tag where owner_type='identity' and owner_id=?", (identity_id,)).fetchall()
         skills = {}
         for s in con.execute("select * from skill where owner_type='identity' and owner_id=? and uptie=?", (identity_id, uptie)):
@@ -49,6 +51,7 @@ def load_unit(identity_id: int, *, uptie: int = 4, db: Path = DB, name: str | No
     return Unit(
         name=name or f"{i['sinner']}#{identity_id}", identity_id=identity_id, side="ally",
         max_hp=i["hp"], hp=i["hp"], sanity=sanity, speed=i["speed_max"], def_level=_level(i["def_level"]),
+        speed_min=i["speed_min"] or 0, speed_max=i["speed_max"] or 0, stagger_lines=stagger,
         formation=formation,
         phys_res={"참격": i["res_slash"], "관통": i["res_pierce"], "타격": i["res_blunt"]},
         affiliations={t["value"] for t in tags if t["kind"] == "affiliation"},

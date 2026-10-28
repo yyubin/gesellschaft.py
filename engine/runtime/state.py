@@ -42,6 +42,8 @@ class Unit:
     sanity: float = 0
     has_sanity: bool = True                    # False = 정신력 없는 적 (정신력 피해 무효, 침잠은 우울 피해)
     speed: float = 0
+    speed_min: int = 0
+    speed_max: int = 0
     def_level: float = 0
     formation: int = 0
     phys_res: dict = field(default_factory=lambda: {"참격": "보통", "관통": "보통", "타격": "보통"})
@@ -54,6 +56,13 @@ class Unit:
     stagger_damage: float = 0                          # M1: 받은 흐트러짐 피해 누적 (지표)
     damage_taken: float = 0
     skill_override: dict = field(default_factory=dict)  # this_turn 스킬 교체 {(slot,var): (slot,var)}
+    # 흐트러짐 (docs/rules 4장): 남은 선 = 최대 체력 %, 직접 피해로 깨지면 사라짐
+    stagger_lines: list = field(default_factory=list)
+    stagger: int = 0                                   # 0 정상, 1 흐트러짐, 2 +, 3 ++
+    stagger_until: int | None = None                   # 이 턴 종료 시 회복 (흐트러진 다음 턴)
+    # 덱·손패 (M2): deck = 남은 카드 (pop = 맨 위), hand = 슬롯 2칸. None 이면 행동하지 않는 유닛
+    deck: list = field(default_factory=list)
+    hand: list | None = None
 
     @property
     def hp_ratio(self) -> float:
@@ -84,6 +93,7 @@ class Battle:
     budgets: dict = field(default_factory=dict)        # (unit, budget, turn) → 사용량
     accum: dict = field(default_factory=dict)          # every: (block id, unit) → 누적량
     pending: list = field(default_factory=list)        # next_turn: (turn, callable)
+    used_sins: list = field(default_factory=list)      # 이번 턴 사용한 스킬 속성 → 턴 종료 시 sin_owned 에 더함
     log: list = field(default_factory=list)
 
     def allies_of(self, u: Unit) -> list[Unit]:
