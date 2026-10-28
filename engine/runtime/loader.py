@@ -13,7 +13,8 @@ from .state import SkillData, Unit
 
 ROOT = Path(__file__).resolve().parents[2]
 DB = ROOT / "data" / "gesellschaft.db"
-SPEC_DIRS = [ROOT.parent / "lpdlc-v2" / "keywords", ROOT.parent / "lpdlc-v2" / "examples"]
+SPEC_DIRS = [ROOT.parent / "lpdlc-v2" / "keywords", ROOT.parent / "lpdlc-v2" / "examples",
+             ROOT.parent / "lpdlc-v2" / "compiled"]
 
 
 def _level(text: str | None) -> int:
@@ -26,7 +27,8 @@ def load_runtime(paths=None, hooks=None) -> Runtime:
     rep = lpdl.validate(doc)
     if not rep.ok:
         raise ValueError("spec 검증 실패:\n" + "\n".join(map(str, rep.errors)))
-    return Runtime(doc, hooks=hooks)
+    from .hooks import HOOKS
+    return Runtime(doc, hooks=HOOKS if hooks is None else hooks)
 
 
 def load_unit(identity_id: int, *, uptie: int = 4, db: Path = DB, name: str | None = None,

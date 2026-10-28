@@ -21,6 +21,17 @@ from .state import Battle, Unit
 
 DECK = (("S1", 3), ("S2", 2), ("S3", 1))
 DEF = ("DEF", 0)
+PASSIVE_DEF = {"방어", "회피", "반격"}       # 상대 공격에 반응하는 수비 — 공격하지 않는 적에게는 행동 없음
+
+
+def attacks(rt: Runtime, u: Unit, key: tuple) -> bool:
+    """이 스킬이 스스로 공격하는가. 수비 스킬은 합 가능 반격(flag clashable_counter)만 공격으로 취급.
+    M2/P1: 상대가 공격하지 않으므로 방어·회피·일반 반격은 [전투 시작시] 효과만 내고 행동하지 않음."""
+    sk = u.skills[key]
+    if sk.slot != "DEF" or sk.atk_type not in PASSIVE_DEF:
+        return True
+    ast = rt.skill_ast(u, sk)
+    return ast is not None and "clashable_counter" in ast.flags
 
 
 @dataclass(frozen=True)
@@ -118,6 +129,8 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
     picks = {u.name: (play(u, choices[u.name].card, rng), choices[u.name].target) for u in actors}
     battle.resonance = dict(Counter(u.skills[u.skill_override.get(k, k)].sin for u in actors
                                     for k in [picks[u.name][0]] if u.skills[u.skill_override.get(k, k)].sin))
+    # [확인 필요] 최대 공명 수 정의 — 지금은 이번 턴 같은 속성 스킬 수의 최댓값
+    battle.max_resonance = max(battle.resonance.values(), default=0)
     combat_start(rt, battle, {name: [key] for name, (key, _) in picks.items()})
     log.shields = {u.name: u.shield for u in battle.units}
 
@@ -129,6 +142,10 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
             log.cancelled.append(u.name)
             continue
         if target.hp <= 0:
+            continue
+        if not attacks(rt, u, u.skill_override.get(key, key)):
+            battle.used_sins.append(u.skills[u.skill_override.get(key, key)].sin)
+            log.actions.append(ActionLog(u.name, u.skill_override.get(key, key), tname, u.speed, 0.0))
             continue
         r = run_action(rt, battle, u, key, target, toss, params)
         battle.used_sins.append(u.skills[r.skill].sin)

@@ -94,8 +94,28 @@ class Runtime:
         self.keywords = {k.name: k for k in doc.keywords}
         self.hooks = dict(hooks or {})
         self._action_seq = 0
+        # prop inherit "부모" — 부모 키워드를 가리키는 효과(증감·참조·부여·폭발)가 이 키워드에 그대로 적용됨.
+        # 부모 키워드 정의의 블록(감소 규칙 등)은 물려받지 않음 → 같은 규칙이면 자식에 직접 적는다
+        self.parent = {k.name: str(k.props["inherit"]) for k in doc.keywords if "inherit" in k.props}
+        self.current_action: Action | None = None   # 진행 중인 행동 (행동 밖 이벤트에서 훅이 참조)
 
     # ── 키워드 메타 ──
+    def ancestors(self, kw: str) -> list[str]:
+        out, k = [], self.parent.get(kw)
+        while k is not None and k not in out:
+            out.append(k)
+            k = self.parent.get(k)
+        return out
+
+    def redirect(self, unit: Unit, kw: str) -> str:
+        """unit 이 kw 를 갖지 않고 kw 를 상속한 키워드를 가지면 그쪽으로 (진동 → 진동 - 보존, 충전 → 보존)."""
+        if kw in unit.statuses or kw in unit.values:
+            return kw
+        for k in list(unit.statuses) + list(unit.values):
+            if kw in self.ancestors(k):
+                return k
+        return kw
+
     def kind(self, kw: str) -> str:
         k = self.keywords.get(kw)
         if k is not None:
@@ -217,8 +237,9 @@ class Runtime:
         if ev is None or not b.args:
             return False
         a = b.args[0]
-        if isinstance(a, A.Ref) and len(a.path) == 1:              # 키워드 이름만: 아무 유닛
-            return self.resolve_kw(a.path[0], f) == ev.keyword
+        if isinstance(a, A.Ref) and len(a.path) == 1:              # 키워드 이름만: 아무 유닛 (상속 키워드 포함)
+            kw = self.resolve_kw(a.path[0], f)
+            return kw == ev.keyword or kw in self.ancestors(ev.keyword or "")
         unit, res = self.resolve_ref(a, f)
         return unit is ev.unit and res == ev.resource
 
@@ -296,7 +317,7 @@ class Runtime:
                 pot = self.eval(s.potency, f) if s.potency is not None else 0
                 cnt = self.eval(s.count, f) if s.count is not None else None
                 for u in self._units(self.eval(s.target, f)):
-                    self.apply_status(f.battle, u, kw, pot, cnt, source=f.self_, frame=f)
+                    self.apply_status(f.battle, u, self.redirect(u, kw), pot, cnt, source=f.self_, frame=f)
             case A.Consume():
                 unit, res = self.resolve_ref(s.ref, f)
                 have = self.get(unit, res)
@@ -318,7 +339,7 @@ class Runtime:
                 times = int(self.eval(s.times, f)) if s.times is not None else 1
                 for u in self._units(self.eval(s.target, f)):
                     for _ in range(times):
-                        self.burst(f.battle, u, kw, source=f.self_, frame=f)
+                        self.burst(f.battle, u, self.redirect(u, kw), source=f.self_, frame=f)
             case A.Deal():
                 amt = self.eval(s.amount, f)
                 for u in self._units(self.eval(s.target, f)):
@@ -515,8 +536,24 @@ class Runtime:
 
     def apply_status(self, battle: Battle, unit: Unit, kw: str, potency: float, count: float | None, *,
                      source: Unit | None, frame: Frame | None = None):
+        """부여: [부여 시] 핸들러가 먼저 돌아 수량(modify amount)을 바꿀 수 있고, 그 뒤 적용한다.
+        수치형(kind value, 예: 약속된 못) 은 potency 만큼 값 증가 (max 적용)."""
+        value_kind = self.kind(kw) == "value"
+        ev = Event("applied", unit=unit, resource=("value", kw) if value_kind else ("status", kw, "potency"),
+                   keyword=kw, amount=potency,
+                   source=source, source_skill=frame.action.skill if frame and frame.action else None)
+        self.emit(battle, "applied", ev=ev)
+        potency = ev.amount
+        if value_kind:
+            if potency > 0:
+                mx = self.prop(kw, "max")
+                v = unit.values.get(kw, 0) + potency
+                unit.values[kw] = v if mx is None else min(float(mx), v)
+            return
         s = unit.statuses.get(kw)
         if s is None:
+            if potency <= 0 and not count:
+                return
             s = unit.statuses[kw] = Status(potency=0, count=0)
             count = 1 if count is None else count
         else:
@@ -524,9 +561,6 @@ class Runtime:
         pmax, cmax = self.prop(kw, "potency_max"), self.prop(kw, "count_max")
         s.potency = s.potency + potency if pmax is None else min(float(pmax), s.potency + potency)
         s.count = s.count + count if cmax is None else min(float(cmax), s.count + count)
-        ev = Event("applied", unit=unit, resource=("status", kw, "potency"), keyword=kw, amount=potency,
-                   source=source, source_skill=frame.action.skill if frame and frame.action else None)
-        self.emit(battle, "applied", ev=ev)
 
     def burst(self, battle: Battle, unit: Unit, kw: str, *, source: Unit | None, frame: Frame | None = None):
         s = unit.statuses.get(kw)
@@ -534,7 +568,7 @@ class Runtime:
             return 0
         ev = Event("burst", unit=unit, resource=("status", kw, "potency"), keyword=kw, amount=s.potency,
                    source=source, source_skill=frame.action.skill if frame and frame.action else None)
-        self.emit(battle, "burst", ev=ev)
+        self.emit(battle, "burst", ev=ev, target=unit)          # target = 폭발한 유닛
         pct = ev.mods["stagger_damage_pct"]
         if frame is not None and frame.action is not None:
             pct += frame.action.mods["stagger_damage_pct"]
@@ -583,7 +617,7 @@ class Runtime:
         name = p[1]
         if name in UNIT_FIELDS:
             return unit, ("field", name)
-        kw = self.resolve_kw(name, f)
+        kw = self.redirect(unit, self.resolve_kw(name, f))
         if len(p) == 3:
             return unit, ("status", kw, p[2])
         return unit, ("value", kw)
@@ -724,7 +758,7 @@ class Runtime:
             case "pct":
                 return args[0] * args[1] / 100
             case "has":
-                return isinstance(args[0], Unit) and args[0].has(args[1])
+                return isinstance(args[0], Unit) and args[0].has(self.redirect(args[0], args[1]))
             case "has_affiliation":
                 return isinstance(args[0], Unit) and args[1] in args[0].affiliations
             case "keyword_identity":

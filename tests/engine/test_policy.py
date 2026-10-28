@@ -37,13 +37,13 @@ def test_determinize_reshuffles_remaining_deck_keeps_composition_and_hand():
     assert len(seen) > 1
 
 
-def test_legal_choices_dedupe_same_card_and_def_only_if_attacking():
+def test_legal_choices_dedupe_same_card_and_def_always_candidate():
     rt = runtime()
     foe = dummy()
-    u = unit("u", def_type="방어")
+    u = unit("u")
     u.hand = [("S1", 0), ("S1", 0)]
     assert legal_choices(rt, Battle([u, foe]), u) == [Choice(0, foe.name)]
-    v = unit("v", def_type="참격")
+    v = unit("v", def_type="방어")
     v.hand = [("S1", 0), ("S2", 0)]
     assert [c.card for c in legal_choices(rt, Battle([v, foe]), v)] == [0, 1, "DEF"]
 

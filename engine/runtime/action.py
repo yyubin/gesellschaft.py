@@ -50,6 +50,8 @@ def combat_start(rt: Runtime, battle: Battle, slotted: dict[str, list[tuple]] | 
             base = Frame(battle, u, action=pseudo, aliases=rt.aliases_for(u))
             for b in ast.blocks:
                 rt._run_block(b, base, "combat_start", key=f"{u.name}/{ast.ref.slot}{ast.ref.variant}")
+            if pseudo.replace_to:                   # [전투 시작시] replace this → 이번 턴 그 슬롯 스킬 교체
+                u.skill_override[key] = pseudo.replace_to
 
 
 def combat_end(rt: Runtime, battle: Battle):
@@ -111,6 +113,7 @@ def _begin(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: U
     key = actor.skill_override.get(skill_key, skill_key)
     rt._action_seq += 1
     a = Action(rt._action_seq, actor, target, actor.skills[key])
+    rt.current_action = a
 
     rt.emit(battle, "before_use", action=a)
     if a.replace_to:
@@ -194,6 +197,7 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
     for event, body, frame in a.deferred:
         if event == "attack_end":
             rt.exec_body(body, frame)
+    rt.current_action = None
     return ActionResult(a.damage, dict(a.coin_damage), dict(a.coin_power), dict(a.coin_heads), a.skill.key, crits)
 
 

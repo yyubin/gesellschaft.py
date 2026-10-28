@@ -16,7 +16,6 @@ from .interp import Runtime
 from .state import Battle, Unit
 from .turn import DEF, Choice, Policy, battle_over, policy_highest, resolve_turn, run_turn
 
-NON_ATTACK_DEF = {"방어", "회피", "반격"}
 
 
 @dataclass
@@ -37,18 +36,15 @@ class Objective:
 
 
 def legal_choices(rt: Runtime, battle: Battle, u: Unit) -> list[Choice]:
-    """칸 0/1 (같은 카드면 하나만) + 공격형 수비 스킬 (합 가능 반격 등) × 살아 있는 적.
-    P1: 방어·회피·일반 반격은 공격하지 않는 적 상대로 의미가 없어 제외 (M3 에서 추가)."""
+    """칸 0/1 (같은 카드면 하나만) + 수비 스킬 × 살아 있는 적.
+    수비 스킬은 공격하지 않아도 [전투 시작시] 효과나 교체(#204 가호 100 → S3 variant 1)로 의미가 있을 수 있어 항상 후보."""
     targets = [e.name for e in battle.enemies_of(u) if e.hp > 0]
     cards: list = []
     for i, key in enumerate(u.hand):
         if key not in [u.hand[j] for j in cards]:
             cards.append(i)
-    d = u.skills.get(DEF)
-    if d is not None:
-        ast = rt.skill_ast(u, d)
-        if d.atk_type not in NON_ATTACK_DEF or (ast is not None and "clashable_counter" in ast.flags):
-            cards.append("DEF")
+    if DEF in u.skills:
+        cards.append("DEF")
     return [Choice(c, t) for c in cards for t in targets]
 
 
