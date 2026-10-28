@@ -73,6 +73,8 @@ def evaluate(rt: Runtime, battle: Battle, make_policy, *, games: int = 300, seed
     return {
         "games": n,
         "mean_kill_turn": round(sum(turns) / n, 3),
+        "se": round(_se(turns), 3),                 # 평균의 표준오차
+        "turns": turns,                             # 판별 처치 턴 (같은 seed 끼리 짝지은 비교용, LLM 에게는 안 보냄)
         "kill_turn_dist": {str(t): round(c / n, 3) for t, c in sorted(dist.items())},
         "skill_share": {k: round(v / tot, 3) for k, v in sorted(usage.items())},
         "skill_share_by_turn": {t: {k: round(v / sum(c.values()), 2) for k, v in sorted(c.items())}
@@ -81,6 +83,20 @@ def evaluate(rt: Runtime, battle: Battle, make_policy, *, games: int = 300, seed
         "trace": {k: [round(sum(v) / len(v), 2) if v else None for v in rows] for k, rows in sorted(traces.items())},
         "rule_fired": {("default" if k == -1 else f"rules[{k}]"): v for k, v in sorted(fired.items())},
     }
+
+
+def _se(xs: list) -> float:
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    m = sum(xs) / n
+    return (sum((x - m) ** 2 for x in xs) / (n - 1) / n) ** 0.5
+
+
+def paired(a: dict, b: dict) -> tuple[float, float]:
+    """같은 seed 로 돈 두 평가의 차이 (a − b) 평균과 표준오차. 공통 난수라 개별 se 보다 훨씬 작다."""
+    d = [x - y for x, y in zip(a["turns"], b["turns"])]
+    return round(sum(d) / len(d), 3), round(_se(d), 3)
 
 
 # ── 인격 spec 원문 ───────────────────────────────────────────────────────────

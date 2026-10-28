@@ -144,3 +144,30 @@ def test_one_bad_plan_does_not_drop_the_others():
     plans, errors = P.parse_plans(f"```json\n{json.dumps([good, bad])}\n```")
     assert [p.name for p in plans] == ["a"]
     assert len(errors) == 1 and errors[0].startswith("b:") and "원래 칸" in errors[0]
+
+
+def test_ablation_flags_harmful_rule_and_best_prefers_simpler_plan(monkeypatch):
+    """r0 = 2턴째 S1 (해로움: 기세 1 이후 S1 은 낭비), r1 = 기세 0 이면 S1, r2 = S1 보관."""
+    from engine.agent.harness import Candidate, GuideRun, _eval_cached, ablate
+    rt = runtime()
+    battle = Battle([unit(), dummy(hp=60)])
+    cache = {}
+    good = P.Plan.from_dict({"name": "good", "rules": [{"when": "self.기세 < 1", "use": ["S1"]}, {"avoid": ["S1"]}]})
+    noisy = P.Plan.from_dict({"name": "noisy", "rules": [{"when": "turn == 2", "use": ["S1"]},
+                                                          {"when": "self.기세 < 1", "use": ["S1"]}, {"avoid": ["S1"]}]})
+    cg = Candidate(good, _eval_cached(rt, battle, good, 200, cache))
+    cn = Candidate(noisy, _eval_cached(rt, battle, noisy, 200, cache))
+    abl = ablate(rt, battle, cn, 200, cache)
+    assert abl[0]["delta"] < 0 and abs(abl[0]["delta"]) > 2 * abl[0]["se_delta"]      # 빼면 빨라짐 = 해로운 규칙
+    assert abl[1]["delta"] > 0                                                         # 빌드업 규칙은 도움
+    run = GuideRun(1, candidates=[cn, cg])
+    assert run.best is cg
+
+
+def test_best_tie_break_fewer_rules_within_noise():
+    from engine.agent.harness import Candidate, GuideRun
+    r = lambda turns: {"mean_kill_turn": sum(turns) / len(turns), "turns": turns, "se": 0}
+    a = Candidate(P.Plan.from_dict({"name": "a", "rules": [{"use": ["S1"]}, {"use": ["S2"]}]}), r([5, 6, 5, 6]))
+    b = Candidate(P.Plan.from_dict({"name": "b", "rules": [{"use": ["S1"]}]}), r([5, 6, 6, 5]))   # 평균 같음
+    c = Candidate(P.Plan.from_dict({"name": "c", "rules": []}), r([7, 8, 7, 8]))                 # 확실히 느림
+    assert GuideRun(1, candidates=[a, b, c]).best is b

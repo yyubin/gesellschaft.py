@@ -35,7 +35,7 @@ def main():
     g = sub.add_parser("guide")
     g.add_argument("identity", type=int)
     g.add_argument("--hp", type=float, default=300)
-    g.add_argument("--rounds", type=int, default=3)
+    g.add_argument("--rounds", type=int, default=4)
     g.add_argument("--plans", type=int, default=3)
     g.add_argument("--games", type=int, default=300)
     g.add_argument("--rollout-ref", type=float, default=None, help="롤아웃 정책 평균 처치 턴 (policy_eval.py 결과)")

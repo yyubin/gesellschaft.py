@@ -16,7 +16,7 @@ from engine.runtime.state import Battle
 from engine.runtime.turn import Choice
 
 from . import plan as P
-from .tools import battle_from_state, evaluate, spec_source
+from .tools import battle_from_state, evaluate, paired, spec_source
 
 GAME_RULES = """\
 ## 게임 규칙 (시뮬레이터에 구현된 것)
@@ -57,11 +57,22 @@ spec 을 읽고 이 인격의 핵심 자원·임계치·연계를 먼저 3~6줄�
 그다음 서로 다른 가설의 계획 {n}개를 ```json 블록 하나에 배열로 내라. 각 계획에 "hypothesis" 를 한 문장으로 적어라."""
 
 FEEDBACK = """\
-평가 결과 ({games}판, 같은 난수):
+평가 결과 ({games}판, 같은 난수 — 계획끼리 판별로 짝지어 비교):
 {results}
 
-결과를 해석해라: 어떤 규칙이 효과가 있었고(rule_fired, skill_share_by_turn, trace 를 근거로), 무엇이 틀렸나.
-그다음 개선한 계획 {n}개를 ```json 배열로 내라 (지금까지 최고 계획을 다듬은 것 1개 이상 포함)."""
+## 지금까지 순위 (전체 라운드)
+{board}
+
+## 규칙 빼 보기 (이번 라운드 상위 계획)
+{ablation}
+- delta = 그 규칙을 뺀 계획 − 원래 계획 (평균 처치 턴). **delta < 0 이면 그 규칙이 해롭다** (빼면 빨라짐).
+  |delta| 가 se_delta 의 2배보다 작으면 효과가 불분명 → 빼는 쪽이 낫다 (규칙은 적을수록 좋음)
+- vs_highest / vs_best 도 같은 방식의 짝지은 차이 (음수 = 더 빠름)
+
+결과를 해석해라: 어떤 규칙이 효과가 있었고 어떤 규칙이 해로웠나 (규칙 빼 보기, rule_fired, skill_share_by_turn, trace 근거).
+그다음 개선한 계획 {n}개를 ```json 배열로 내라.
+- 해롭거나 불분명한 규칙은 빼라. 지금까지 최고 계획을 다듬은 것 1개 이상 포함
+- 이미 평가한 것과 같은 계획은 다시 내지 마라"""
 
 FINAL = """\
 최종 결과:
@@ -69,8 +80,9 @@ FINAL = """\
 
 최고 계획을 바탕으로 **운용 가이드**를 한국어 마크다운으로 써라.
 - 첫 줄: 한 문장 요약
-- 우선순위 규칙 (조건 → 행동, 이유) — 계획의 규칙과 일치시켜라
-- 성능: 평균 처치 턴을 highest / rollout / 이 계획으로 비교 (위 수치만 인용)
+- 우선순위 규칙 (조건 → 행동, 이유) — 최고 계획의 규칙과 정확히 일치시켜라. 규칙 빼 보기에서 확인된 효과(delta)를 근거로
+- 성능: 평균 처치 턴을 highest / rollout / 이 계획으로 비교 (위 수치만 인용, se 를 함께)
+- 시도했지만 효과가 없거나 해로웠던 아이디어 (있으면)
 - 주의점: 이 결론이 기대는 가정 (허수아비 상대, 단독)
 코드 블록은 쓰지 마라."""
 
@@ -81,6 +93,12 @@ class Candidate:
     result: dict | None = None
     error: str | None = None
     round: int = 0
+    ablation: list | None = None
+
+
+def _key(plan: P.Plan) -> str:
+    d = plan.to_dict()
+    return json.dumps({"rules": d["rules"], "default": d["default"]}, ensure_ascii=False, sort_keys=True)
 
 
 @dataclass
@@ -89,29 +107,78 @@ class GuideRun:
     candidates: list[Candidate] = field(default_factory=list)
     transcript: list[tuple[str, str]] = field(default_factory=list)
     guide: str = ""
+    baseline: dict | None = None         # 규칙 없는 계획 (= highest) 평가
+
+    def ranked(self) -> list[Candidate]:
+        seen, out = set(), []
+        for c in sorted((c for c in self.candidates if c.result), key=lambda c: c.result["mean_kill_turn"]):
+            if _key(c.plan) not in seen:
+                seen.add(_key(c.plan))
+                out.append(c)
+        return out
 
     @property
     def best(self) -> Candidate | None:
-        ok = [c for c in self.candidates if c.result]
-        return min(ok, key=lambda c: c.result["mean_kill_turn"]) if ok else None
+        """평균이 가장 낮은 계획과 짝지은 차이가 오차(2 se) 안인 계획 중 규칙이 가장 적은 것."""
+        r = self.ranked()
+        if not r:
+            return None
+        top = r[0]
+
+        def close(c):
+            d, se = paired(c.result, top.result)
+            return c is top or d <= 2 * se
+        return min((c for c in r if close(c)), key=lambda c: (len(c.plan.rules), c.result["mean_kill_turn"]))
 
 
-def _brief(c: Candidate) -> dict:
+def _brief(c: Candidate, run: GuideRun | None = None) -> dict:
     if c.error:
         return {"name": c.plan.name if c.plan else "?", "error": c.error}
     r = c.result
-    return {"name": c.plan.name, "plan": c.plan.to_dict(), "mean_kill_turn": r["mean_kill_turn"],
-            "kill_turn_dist": r["kill_turn_dist"], "skill_share": r["skill_share"],
-            "skill_share_by_turn": r["skill_share_by_turn"], "rule_fired": r["rule_fired"], "trace": r["trace"]}
+    out = {"name": c.plan.name, "plan": c.plan.to_dict(), "mean_kill_turn": r["mean_kill_turn"], "se": r["se"]}
+    if run is not None and run.baseline is not None:
+        out["vs_highest"] = dict(zip(("diff", "se"), paired(r, run.baseline)))
+    out.update({k: r[k] for k in ("kill_turn_dist", "skill_share", "skill_share_by_turn", "rule_fired", "trace")})
+    return out
+
+
+def _board(run: GuideRun, top: int = 6) -> str:
+    r = run.ranked()
+    rows = []
+    for c in r[:top]:
+        d = paired(c.result, r[0].result)
+        rows.append({"round": c.round, "name": c.plan.name, "rules": len(c.plan.rules),
+                     "mean_kill_turn": c.result["mean_kill_turn"], "vs_best": {"diff": d[0], "se": d[1]}})
+    return json.dumps(rows, ensure_ascii=False)
+
+
+def _eval_cached(rt, battle, plan: P.Plan, games: int, cache: dict) -> dict:
+    k = _key(plan)
+    if k not in cache:
+        cache[k] = evaluate(rt, battle, lambda: P.PlanPolicy(rt, plan), games=games)
+    return cache[k]
+
+
+def ablate(rt: Runtime, battle: Battle, c: Candidate, games: int, cache: dict) -> list:
+    """규칙을 하나씩 뺀 계획을 평가 → 그 규칙의 기여 (delta = 뺀 것 − 원래, 음수면 해로운 규칙)."""
+    out = []
+    for i, r in enumerate(c.plan.rules):
+        sub = P.Plan(f"{c.plan.name} - rules[{i}]", [x for j, x in enumerate(c.plan.rules) if j != i], c.plan.default)
+        d, se = paired(_eval_cached(rt, battle, sub, games, cache), c.result)
+        out.append({"rule": i, "when": r.when, "use": r.use, "avoid": r.avoid,
+                    "fired": c.result["rule_fired"].get(f"rules[{i}]", 0), "delta": d, "se_delta": se})
+    return out
 
 
 def run_guide(rt: Runtime, battle: Battle, identity_id: int, conv_factory, *, hp: float, refs: dict,
-              rounds: int = 3, n_plans: int = 3, games: int = 300, log=print) -> GuideRun:
+              rounds: int = 4, n_plans: int = 3, games: int = 300, ablate_top: int = 2, log=print) -> GuideRun:
     """conv_factory(system) -> Conversation (lpdl.compiler 백엔드의 start)."""
     run = GuideRun(identity_id)
+    cache: dict = {}
+    run.baseline = _eval_cached(rt, battle, P.Plan("highest", [], "highest"), games, cache)
     conv = conv_factory(_system(identity_id, spec_source(rt, identity_id), hp, refs))
-    me = battle.units[0]
     msg = FIRST.format(n=n_plans)
+    results = "[]"
     for rnd in range(1, rounds + 1):
         log(f"[라운드 {rnd}] LLM 계획 요청")
         reply = conv.send(msg)
@@ -128,22 +195,30 @@ def run_guide(rt: Runtime, battle: Battle, identity_id: int, conv_factory, *, hp
                 probe = battle.clone()
                 probe.units[0].hand = [("S1", 0), ("S3", 0)]
                 P.check_plan(rt, probe, probe.units[0], pl)
-                c.result = evaluate(rt, battle, lambda pl=pl: P.PlanPolicy(rt, pl), games=games)
+                dup = _key(pl) in cache
+                c.result = _eval_cached(rt, battle, pl, games, cache)
             except P.PlanError as e:
                 c.error = str(e)
             batch.append(c)
-            log(f"  {pl.name}: " + (c.error or f"평균 처치 턴 {c.result['mean_kill_turn']}"))
+            log(f"  {pl.name}: " + (c.error or f"평균 처치 턴 {c.result['mean_kill_turn']} ± {c.result['se']}"
+                                     + (" (이미 평가한 계획)" if dup else "")))
         run.candidates += batch
-        results = json.dumps([_brief(c) for c in batch] + [{"error": e} for e in errors], ensure_ascii=False)
+        ok = sorted((c for c in batch if c.result), key=lambda c: c.result["mean_kill_turn"])
+        for c in ok[:ablate_top]:
+            c.ablation = ablate(rt, battle, c, games, cache)
+            log(f"  빼 보기 {c.plan.name}: " + ", ".join(f"r{a['rule']} {a['delta']:+.2f}" for a in c.ablation))
+        results = json.dumps([_brief(c, run) for c in batch] + [{"error": e} for e in errors], ensure_ascii=False)
+        abl = json.dumps([{"name": c.plan.name, "rules": c.ablation} for c in ok[:ablate_top]], ensure_ascii=False)
         if rnd < rounds:
-            msg = FEEDBACK.format(games=games, results=results, n=n_plans)
+            msg = FEEDBACK.format(games=games, results=results, board=_board(run), ablation=abl, n=n_plans)
     best = run.best
-    final = {"refs": refs, "best": _brief(best) if best else None,
-             "all": [{"round": c.round, "name": c.plan.name if c.plan else "?",
-                      "mean_kill_turn": c.result["mean_kill_turn"] if c.result else None, "error": c.error}
-                     for c in run.candidates]}
+    if best is not None and best.ablation is None:
+        best.ablation = ablate(rt, battle, best, games, cache)
+    final = {"refs": refs, "best": {**_brief(best, run), "ablation": best.ablation} if best else None,
+             "leaderboard": json.loads(_board(run, top=10)),
+             "errors": [{"round": c.round, "name": c.plan.name, "error": c.error} for c in run.candidates if c.error]}
     log("[최종] 가이드 작성 요청")
-    msg = (f"마지막 라운드 결과:\n{results}\n\n" if rounds else "") + FINAL.format(results=json.dumps(final, ensure_ascii=False))
+    msg = f"마지막 라운드 결과:\n{results}\n\n" + FINAL.format(results=json.dumps(final, ensure_ascii=False))
     run.guide = conv.send(msg)
     run.transcript.append((msg, run.guide))
     return run
@@ -154,11 +229,13 @@ def save_guide(run: GuideRun, out_dir: Path):
     (out_dir / "guide.md").write_text(run.guide, encoding="utf-8")
     best = run.best
     if best:
-        (out_dir / "best_plan.json").write_text(json.dumps({**best.plan.to_dict(), "result": best.result},
+        res = {k: v for k, v in best.result.items() if k != "turns"}
+        (out_dir / "best_plan.json").write_text(json.dumps({**best.plan.to_dict(), "result": res, "ablation": best.ablation},
                                                            ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "candidates.json").write_text(json.dumps(
         [{"round": c.round, "plan": c.plan.to_dict() if c.plan else None, "error": c.error,
-          "mean_kill_turn": c.result["mean_kill_turn"] if c.result else None} for c in run.candidates],
+          "mean_kill_turn": c.result["mean_kill_turn"] if c.result else None,
+          "se": c.result["se"] if c.result else None, "ablation": c.ablation} for c in run.candidates],
         ensure_ascii=False, indent=2), encoding="utf-8")
     (out_dir / "transcript.md").write_text("\n\n".join(f"## >>> 요청\n{a}\n\n## <<< 응답\n{b}" for a, b in run.transcript),
                                            encoding="utf-8")
