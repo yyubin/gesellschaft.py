@@ -89,7 +89,27 @@ LLM 은 스킬 원문·LPDL 을 읽고 "이 인격은 보존 위력 3이 핵심�
 
 롤아웃은 결정 1회 ≈ 0.7s (판당 5.5s). 팀·합이 들어오면 최적화 필요.
 
-## 6. 순서 제안
+## 6. P2 구현 (2026-10-28)
+
+`engine/agent/` — `python -m engine.agent <guide|eval|advise>`
+- `plan.py`: 계획 DSL (JSON 규칙 목록, 조건식 = 제한된 파이썬 식). `PlanPolicy` 가 실행, `fired` 로 규칙별 발동 횟수 집계.
+  이름·형식 오류는 `PlanError` 메시지로 LLM 에게 그대로 돌려줌
+- `tools.py`: `evaluate` (처치 턴 분포, 스킬 비율 전체·턴별, 자원 trace, 규칙 발동), `spec_source` (인격 + 관련 키워드 LPDL),
+  `battle_from_state` (조언 입력 JSON → 선택 직전 상태, 덱 = 6장 − 손패 − 셔플 후 사용 카드)
+- `harness.py`:
+  - `run_guide`: 분석 + 계획 N개 → 평가 → 결과 피드백 → 수정 (R 라운드) → 운용 가이드. 결과는 `data/agent/<id>/`
+    (guide.md, best_plan.json, candidates.json, transcript.md)
+  - `advise`: 롤아웃 정책 후보별 점수 + LLM 설명
+- 백엔드: lpdlc-v2 `ClaudeCodeBackend` (claude -p, 로그인 사용 — 셸의 ANTHROPIC_API_KEY 는 빼고 실행) / `AnthropicBackend`
+
+손으로 쓴 한 줄 계획 "아르뮈르 ≥ 60 이면 DEF, 아니면 highest" = 7.73턴 (300판) — 롤아웃 7.64 에 근접.
+
+첫 가이드 실행 (#202, 체력 300, 3라운드 × 3계획, 300판): highest 8.22 / **LLM 최고 계획 7.94** / 롤아웃 7.64
+- LLM 이 원 킥 사이클(아르뮈르 ≥ 60 → DEF)은 찾았지만, 보존 빌드업 규칙(위력 < 3 → S2·S1)을 앞에 붙여 한 줄 계획(7.73)보다 나빠짐
+- 3라운드는 계획 하나의 카드 이름 오류("S3v1")로 전체가 버려짐 → 계획별 오류 격리로 수정
+- 개선 여지: 라운드 수, 규칙 하나씩 빼 본 결과(ablation)를 피드백에 넣기, 300판 노이즈(±0.1턴) 고려
+
+## 7. 순서 제안
 
 | 단계 | 내용 | 검증 |
 |---|---|---|
