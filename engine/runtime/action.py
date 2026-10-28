@@ -179,6 +179,7 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
             flat_pre=a.mods["damage_flat"] + cm["damage_flat"],
         )
         dmg = hit_damage(power, ctx, params)
+        a.coin_pct[k] = params.dmg_pct_base + ctx.dmg_pct
         a.coin_damage[k] = a.coin_damage.get(k, 0) + dmg
         rt.damage(target, dmg, a)
         check_stagger(battle, target)

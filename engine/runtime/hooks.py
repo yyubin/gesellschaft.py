@@ -47,14 +47,27 @@ def vibration_preserve_burst_sloth_damage(rt, f, base, step, cap):
 def mark_skill_as_charge_consuming(rt, f):
     """이 스킬을 '충전 횟수를 소모하는 스킬'로 표시. 보존 신역 보유자가 있으면 적이 받는 피해 +10%
     (르누아르 아군 스킬이면 2배) — charge_consuming_skill_taken_damage_bonus 의 효과를 여기서 적용.
-    근사: 표시된 뒤의 코인부터 적용 (못 부여는 코인 적중 시라 그 코인 피해는 이미 계산됨). [확인 필요]"""
+    스킬 첫 코인부터 적용 (사용자 확인 2026-10-28): 표시 전에 이미 적중한 코인은 피해를 소급해 더한다."""
     a = rt.current_action
     if a is None or getattr(a, "charge_consuming", False):
         return
     a.charge_consuming = True
     holders = [u for u in f.battle.units if u.side == a.actor.side and u.values.get("보존 신역", 0) > 0]
-    if holders:
-        a.mods["damage_pct"] += 10 * (2 if "르누아르" in a.actor.affiliations else 1)
+    if not holders:
+        return
+    bonus = 10 * (2 if "르누아르" in a.actor.affiliations else 1)
+    for k, d in list(a.coin_damage.items()):
+        extra = d * (bonus / 100) / a.coin_pct.get(k, 1)
+        a.coin_damage[k] = d + extra
+        rt.damage(a.target, extra, a)
+    a.mods["damage_pct"] += bonus
+
+
+def damage_pct_per_targets_below_weight(rt, f, pct):
+    """이 스킬 공격 가중치보다 낮은 공격 대상 1당 피해량 +pct%. 대상 1명이면 +pct% (사용자 확인 2026-10-28).
+    M3 다중 대상: 대상 수 < 가중치인 만큼 — 가중치 데이터 필요."""
+    if f.action is not None:
+        f.action.mods["damage_pct"] += pct
 
 
 def _noop(rt, f, *args):
@@ -73,5 +86,6 @@ HOOKS = {
     "coin_power_per_all_targets_vibration_nail_sum": coin_power_per_all_targets_vibration_nail_sum,
     "vibration_preserve_burst_sloth_damage": vibration_preserve_burst_sloth_damage,
     "mark_skill_as_charge_consuming": mark_skill_as_charge_consuming,
+    "damage_pct_per_targets_below_weight": damage_pct_per_targets_below_weight,
     **{n: _noop for n in NOOP},
 }

@@ -60,6 +60,7 @@ class Action:
     coin: int | None = None
     reuse: int = 0                                              # reuse_coin 대기 횟수
     last_coin: int | None = None                                # 이번 공격의 마지막 코인 (합에서 파괴되면 남은 것 중)
+    coin_pct: dict = field(default_factory=dict)                # 코인 번호 → 적중 때 피해량 배율 (셋째 괄호, 소급 보정용)
     coin_heads: dict = field(default_factory=dict)
     coin_power: dict = field(default_factory=dict)
     coin_damage: dict = field(default_factory=dict)
