@@ -162,3 +162,33 @@ def test_use_skill_extra_one_sided_attack():
     resolve_turn(rt, battle, rng, [r, d], {"R": Choice(0, "보스"), "D": Choice(0, "보스")})
     assert ("use_skill", "D", ("S1", 1), "보스", 3.0) in battle.log
     assert e.hp == 1000 - 10 - 3 - 10                    # R 10 + 심판 3 + D 10 (D 의 자기 공격 땐 발동 안 함)
+
+
+def test_evade_dodges_all_coins_until_first_hit():
+    """회피 위력 7 (고정): 위력 5 코인은 회피, 위력 9 코인에서 맞으면 그 뒤로 계속 맞음 (5 도)."""
+    rt = runtime()
+    a = def_ally("A", 1, "회피", base=7)
+    e = boss(dice=2, speed=(4, 4), skills=[("약", "참격", "분노", 5, 0, 1), ("강", "참격", "분노", 9, 0, 1)],
+             pattern=["약", "강"], level=50, def_level=0)
+    battle, rng = setup(a, boss_unit=e)
+    begin_turn(rt, battle, rng)
+    battle.intents = [battle.intents[0].__class__("보스", 0, ("E1", 0), "A", 4),
+                      battle.intents[0].__class__("보스", 1, ("E2", 0), "A", 4),
+                      battle.intents[0].__class__("보스", 0, ("E1", 0), "A", 3)]
+    resolve_turn(rt, battle, rng, [a], {"A": Choice("DEF", "보스", 0)})
+    assert a.hp == 100 - 9 - 5
+    assert [x[0] for x in battle.log if x[0] == "evade"] == ["evade"]
+    assert a.evade_skill is None
+
+
+def test_stagger_damage_moves_line_up():
+    """선 50%, 흐트러짐 피해 20 누적 → 체력 70 이하에서 흐트러짐 (직접 피해 때 판정), 깨지면 누적 0."""
+    from engine.runtime.action import check_stagger
+    u = ally("U", 1, hp=100, stagger_lines=[50])
+    b = Battle([u])
+    u.stagger_gauge, u.hp = 20, 71
+    check_stagger(b, u)
+    assert u.stagger == 0
+    u.hp = 70
+    check_stagger(b, u)
+    assert u.stagger == 1 and u.stagger_gauge == 0 and u.stagger_lines == []

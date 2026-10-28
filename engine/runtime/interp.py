@@ -379,6 +379,7 @@ class Runtime:
                         amt_u = amt
                     if s.damage_type == "stagger":
                         u.stagger_damage += amt_u
+                        u.stagger_gauge += amt_u
                     elif s.damage_type == "sanity":
                         if u.has_sanity:                    # 정신력 없는 대상에겐 효과 없음 (침잠의 우울 전환은 standard.lpdl)
                             u.sanity = max(-45, u.sanity - amt_u)
@@ -603,6 +604,7 @@ class Runtime:
             pct += frame.action.mods["stagger_damage_pct"]
         dmg = ev.amount * (1 + pct / 100)
         unit.stagger_damage += dmg
+        unit.stagger_gauge += dmg                      # 흐트러짐 선 앞당김 (사용자 확인 2026-10-28)
         battle.log.append(("burst", unit.name, kw, ev.amount, pct, dmg))
         return dmg
 

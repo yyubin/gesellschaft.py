@@ -15,7 +15,7 @@ from typing import Callable
 
 from engine.params import DEFAULT, Params
 
-from .action import combat_end, combat_start, run_action, run_clash, stage_enter, turn_end, turn_start
+from .action import combat_end, combat_start, defense_power, run_action, run_clash, stage_enter, turn_end, turn_start
 from .interp import Runtime, new_mods
 from .state import Battle, Unit
 
@@ -218,7 +218,10 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
     guard = {a.unit.name: a for a in acts if a.ally and not attacks(rt, a.unit, a.unit.skill_override.get(a.key, a.key))}
     for a in guard.values():
         a.done = True
-        battle.used_sins.append(a.unit.skills[a.unit.skill_override.get(a.key, a.key)].sin)
+        sk = a.unit.skills[a.unit.skill_override.get(a.key, a.key)]
+        battle.used_sins.append(sk.sin)
+        if sk.atk_type == "회피":                    # 이번 턴 나를 때리는 적의 모든 스킬에 적용 (사용자 확인 2026-10-28)
+            a.unit.evade_skill = sk
     for a in sorted(acts, key=lambda x: -x.speed):             # 안정 정렬: 같은 속도는 아군 → 적, 입력 순서
         if a.done:
             continue
@@ -244,10 +247,12 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
                     o.result.damage if (won and o.result) else 0.0, kind="clash",
                     clash={"with": other.unit.name, "winner": o.winner, "rounds": o.rounds}))
             continue
-        g = guard.pop(target.name, None) if not a.ally else None
+        g = guard.get(target.name) if not a.ally else None
+        if g is not None and g.unit.skills[g.unit.skill_override.get(g.key, g.key)].atk_type != "회피":
+            guard.pop(target.name)                              # 방어·반격은 처음 들어오는 공격 하나에만
         gkey = g.unit.skill_override.get(g.key, g.key) if g else None
         if g is not None and g.unit.skills[gkey].atk_type == "방어" and _can_act(battle, g.unit):
-            sh = _defense_power(g.unit.skills[gkey], g.unit, toss, params)   # 방어: 위력만큼 보호막 후 피격
+            sh = defense_power(g.unit.skills[gkey], g.unit, toss, params)    # 방어: 위력만큼 보호막 후 피격
             g.unit.shield += sh
             log.actions.append(ActionLog(g.unit.name, gkey, u.name, g.speed, 0.0, kind="guard", clash={"shield": sh}))
         r = run_action(rt, battle, u, a.key, target, toss, params)
@@ -257,11 +262,10 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
         if g is not None and g.unit.skills[gkey].atk_type == "반격" and _can_act(battle, g.unit) and u.hp > 0:
             rc = run_action(rt, battle, g.unit, g.key, u, toss, params)       # 반격: 피해를 받은 뒤 일방 공격
             log.actions.append(ActionLog(g.unit.name, rc.skill, u.name, g.speed, rc.damage, kind="counter"))
-        elif g is not None and g.unit.skills[gkey].atk_type == "회피":
-            battle.log.append(("evade-unimplemented", g.unit.name))          # [확인 필요] 회피 판정 단위
-    for g in guard.values():                                    # 공격받지 않은 수비 스킬
+    for g in guard.values():                                    # 공격받지 않은 수비 스킬 (회피는 여기서 기록)
         log.actions.append(ActionLog(g.unit.name, g.unit.skill_override.get(g.key, g.key), "", g.speed, 0.0,
                                      kind="defend"))
+        g.unit.evade_skill = None
     rt.current_toss = None
 
     combat_end(rt, battle)
@@ -276,13 +280,6 @@ def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[U
     battle.intents = []
     turn_end(rt, battle)
     return log
-
-
-def _defense_power(sk, u: Unit, toss, params: Params) -> float:
-    """방어 스킬 위력 = 기본 + 앞면 코인 위력 합 (코인 토스, 정신력 앞면 확률)."""
-    from engine.coins import heads_prob
-    p = heads_prob(u.sanity)
-    return max(params.min_power, sk.base + sum(sk.coin_power for _ in range(sk.coins) if toss(p)))
 
 
 def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = policy_highest,

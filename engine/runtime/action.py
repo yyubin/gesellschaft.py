@@ -98,14 +98,22 @@ def _chance(toss: Toss, p: float) -> bool:
 
 def check_stagger(battle: Battle, u: Unit):
     """직접 피해(코인 적중) 뒤 흐트러짐 선 판정 (docs/rules 4장). 한 번에 깨진 선 수 = 흐트러짐 단계.
-    흐트러진 턴의 남은 행동 취소 + 다음 턴 행동 불가 → 다음 턴 종료 시 회복 (사용자 확인 2026-10-28)."""
-    broken = [x for x in u.stagger_lines if u.hp <= u.max_hp * x / 100]
+    흐트러짐 피해 누적(stagger_gauge)만큼 선이 앞당겨짐 (사용자 확인 2026-10-28). 판정은 직접 피해 때만 [확인 필요:
+    폭발로 선이 현재 체력을 넘으면 즉시인지]. 흐트러진 턴의 남은 행동 취소 + 다음 턴 행동 불가 → 다음 턴 종료 시 회복."""
+    broken = [x for x in u.stagger_lines if u.hp <= u.max_hp * x / 100 + u.stagger_gauge]
     if not broken or u.hp <= 0:
         return
+    u.stagger_gauge = 0
     u.stagger_lines = [x for x in u.stagger_lines if x not in broken]
     u.stagger = min(3, max(u.stagger, len(broken)))
     u.stagger_until = battle.turn + 1
     battle.log.append(("stagger", u.name, battle.turn, u.stagger))
+
+
+def defense_power(sk, u: Unit, toss: Toss, params: Params = DEFAULT) -> float:
+    """수비 스킬 위력 = 기본 + 앞면 코인 위력 합 (정신력 앞면 확률). 방어 보호막·회피 비교에 사용."""
+    p = heads_prob(u.sanity)
+    return max(params.min_power, sk.base + sum(sk.coin_power for _ in range(sk.coins) if toss(p)))
 
 
 def _begin(rt: Runtime, battle: Battle, actor: Unit, skill_key: tuple, target: Unit) -> tuple[Action, object]:
@@ -178,6 +186,14 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
             dmg_pct=(a.mods["damage_pct"] + cm["damage_pct"] + a.target_mods["taken_damage_pct"]) / 100,
             flat_pre=a.mods["damage_flat"] + cm["damage_flat"],
         )
+        if target.evade_skill is not None:              # 회피: 이 코인 위력 이상이면 회피, 한 번이라도 지면 이후 계속 맞음
+            ep = defense_power(target.evade_skill, target, toss, params)
+            if ep >= power:
+                target.stagger_gauge = max(0.0, target.stagger_gauge - ep)   # 위력만큼 흐트러짐 게이지 회복
+                battle.log.append(("evade", target.name, k, ep, power))
+                i += 1
+                continue
+            target.evade_skill = None
         dmg = hit_damage(power, ctx, params)
         a.coin_pct[k] = params.dmg_pct_base + ctx.dmg_pct
         a.coin_damage[k] = a.coin_damage.get(k, 0) + dmg

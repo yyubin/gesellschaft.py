@@ -63,6 +63,8 @@ class Unit:
     stagger_lines: list = field(default_factory=list)
     stagger: int = 0                                   # 0 정상, 1 흐트러짐, 2 +, 3 ++
     stagger_until: int | None = None                   # 이 턴 종료 시 회복 (흐트러진 다음 턴)
+    stagger_gauge: float = 0                           # 흐트러짐 피해 누적 → 다음 선이 그만큼 앞당겨짐 (선이 깨지면 0)
+    evade_skill: object = None                         # 이번 턴 회피 중인 수비 스킬 (한 번이라도 맞으면 None)
     # 덱·손패 (M2): deck = 남은 카드 (pop = 맨 위), hand = 슬롯 2칸. None 이면 행동하지 않는 유닛
     deck: list = field(default_factory=list)
     hand: list | None = None
