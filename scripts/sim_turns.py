@@ -28,7 +28,7 @@ def main():
 
     def observe(b):
         u, foe = b.units
-        row = {"shield": u.shield, "sanity": u.sanity}
+        row = {"sanity": u.sanity}
         for k, s in u.statuses.items():
             row[f"{k}.위력"], row[f"{k}.횟수"] = s.potency, s.count
         for k, v in u.values.items():
@@ -44,6 +44,8 @@ def main():
     print(f"{'':>14}" + "".join(f"{t + 1:>9}" for t in range(args.turns)))
     dmg = mean_by_turn(runs, lambda row: sum(a.damage for a in row["log"].actions))
     print(f"{'피해':>14}" + "".join(f"{x:9.1f}" for x in dmg))
+    sh = mean_by_turn(runs, lambda row: row["log"].shields.get(me.name, 0))
+    print(f"{'보호막(전투시작)':>14}" + "".join(f"{x:9.1f}" for x in sh))
     for k in keys:
         m = mean_by_turn(runs, lambda row: row.get(k, 0))
         print(f"{k:>14}" + "".join(f"{x:9.2f}" for x in m))

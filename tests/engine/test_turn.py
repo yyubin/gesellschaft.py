@@ -5,7 +5,7 @@ from collections import Counter
 import pytest
 
 import lpdl
-from engine.runtime import Battle, Choice, Runtime, Unit, deal_hand, play, run_turn, simulate_turns
+from engine.runtime import Battle, Choice, Runtime, Unit, deal_hand, play, run_turn, simulate_turns, turn_start
 from engine.runtime.loader import DB, SPEC_DIRS, dummy, load_runtime, load_unit
 from engine.runtime.state import SkillData
 
@@ -101,14 +101,14 @@ def test_multiple_lines_at_once_is_stagger_plus():
 
 def test_sin_resources_count_from_next_turn():
     """보유 조건: 이번 턴 사용한 스킬 속성은 턴 종료 후 반영 → 다음 턴부터 패시브 발동."""
-    rt = runtime('identity 1 { passive "p" { requires hold [분노] 1 on use { gain self.shield 1 } } }')
+    rt = runtime('identity 1 { passive "p" { requires hold [분노] 1 on use { gain self.sanity 1 } } }')
     a, foe = unit("A", identity_id=1), dummy()
     battle, rng = Battle([a, foe]), random.Random(0)
     deal_hand(a, rng)
     run_turn(rt, battle, rng, lambda bt, u: Choice(0, foe.name))
-    assert a.shield == 0 and battle.sin_owned == {"분노": 1}
+    assert a.sanity == 0 and battle.sin_owned == {"분노": 1}
     run_turn(rt, battle, rng, lambda bt, u: Choice(0, foe.name))
-    assert a.shield == 1
+    assert a.sanity == 1
 
 
 @pytest.mark.skipif(not DB.exists(), reason="DB 없음")
@@ -127,3 +127,14 @@ def test_static_speed_modifiers_apply_to_roll():
     deal_hand(a, rng)
     log = run_turn(rt, Battle([a, foe]), rng, lambda bt, u: Choice(0, foe.name))
     assert log.actions[0].speed == 5
+
+
+def test_shield_expires_at_turn_end_next_turn_shield_arrives_at_turn_start():
+    rt = runtime('identity 1 { passive "p" { on turn_end { gain self.shield 7 next_turn } } }')
+    a, foe = unit("A", identity_id=1, shield=30), dummy()
+    battle, rng = Battle([a, foe]), random.Random(0)
+    deal_hand(a, rng)
+    run_turn(rt, battle, rng, lambda bt, u: Choice(0, foe.name))
+    assert a.shield == 0
+    turn_start(rt, battle)
+    assert a.shield == 7

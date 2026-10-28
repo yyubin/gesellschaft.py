@@ -61,6 +61,7 @@ def turn_end(rt: Runtime, battle: Battle):
     rt.emit(battle, "turn_end")
     for u in battle.units:
         u.skill_override.clear()
+        u.shield = 0            # 보호막은 다음 턴으로 넘어가지 않음 (사용자 확인 2026-10-28). next_turn 보호막은 다음 턴 시작에 들어옴
     battle.turn += 1
 
 

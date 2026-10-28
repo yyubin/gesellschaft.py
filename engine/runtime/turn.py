@@ -46,6 +46,7 @@ class TurnLog:
     turn: int
     actions: list = field(default_factory=list)
     cancelled: list = field(default_factory=list)     # 흐트러짐으로 취소된 유닛
+    shields: dict = field(default_factory=dict)       # 전투 시작 직후 보호막 (턴 종료 시 사라지므로 여기서 기록)
 
 
 # ── 덱·손패 ────────────────────────────────────────────────────────────────
@@ -116,6 +117,7 @@ def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = p
     battle.resonance = dict(Counter(u.skills[u.skill_override.get(k, k)].sin for u in actors
                                     for k in [picks[u.name][0]] if u.skills[u.skill_override.get(k, k)].sin))
     combat_start(rt, battle, {name: [key] for name, (key, _) in picks.items()})
+    log.shields = {u.name: u.shield for u in battle.units}
 
     toss = lambda p: rng.random() < p
     for u in sorted(actors, key=lambda x: -x.speed):           # 안정 정렬: 같은 속도는 입력 순서
