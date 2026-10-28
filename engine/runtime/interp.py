@@ -82,7 +82,9 @@ class Frame:
     block_key: str = ""
 
     def child(self, **kw) -> "Frame":
-        f = Frame(**{**self.__dict__, "locals": dict(self.locals)})
+        f = object.__new__(Frame)                  # copy.copy 보다 빠름 (핫패스)
+        f.__dict__.update(self.__dict__)
+        f.locals = dict(self.locals)
         for k, v in kw.items():
             setattr(f, k, v)
         return f
@@ -100,6 +102,23 @@ class Runtime:
         # 부모 키워드 정의의 블록(감소 규칙 등)은 물려받지 않음 → 같은 규칙이면 자식에 직접 적는다
         self.parent = {k.name: str(k.props["inherit"]) for k in doc.keywords if "inherit" in k.props}
         self.current_action: Action | None = None   # 진행 중인 행동 (행동 밖 이벤트에서 훅이 참조)
+        self._kw_order = {k.name: i for i, k in enumerate(doc.keywords)}
+        self._ev_cache: dict[int, frozenset] = {}
+
+    # ── 블록 색인 (핫패스: 이벤트마다 모든 블록을 훑지 않도록) ──
+    def _events(self, node) -> frozenset:
+        """node(스킬·코인·패시브·키워드)의 on 블록 이벤트 집합. "always" 포함 여부도 같이."""
+        k = id(node)
+        e = self._ev_cache.get(k)
+        if e is None:
+            e = self._ev_cache[k] = frozenset("always" if isinstance(b, A.Always) else b.event for b in node.blocks)
+        return e
+
+    def _held_keywords(self, u: Unit, event: str) -> list:
+        names = [n for n in (*u.statuses, *u.values) if n in self._kw_order and event in self._events(self.keywords[n])]
+        if len(names) > 1:
+            names.sort(key=self._kw_order.__getitem__)
+        return names
 
     # ── 키워드 메타 ──
     def ancestors(self, kw: str) -> list[str]:
@@ -148,11 +167,12 @@ class Runtime:
             if skill is not None:
                 base = Frame(battle, action.actor, target=action.target, action=action, ev=ev,
                              aliases=self.aliases_for(action.actor))
-                for b in skill.blocks:
-                    self._run_block(b, base, name, key=f"{action.actor.name}/{skill.ref.slot}{skill.ref.variant}")
+                if name in self._events(skill):
+                    for b in skill.blocks:
+                        self._run_block(b, base, name, key=f"{action.actor.name}/{skill.ref.slot}{skill.ref.variant}")
                 if name in COIN_EVENTS and action.coin is not None:
                     for c in skill.coins:
-                        if c.index == action.coin:
+                        if c.index == action.coin and name in self._events(c):
                             for b in c.blocks:
                                 self._run_block(b, base.child(scope="coin"), name,
                                                 key=f"{action.actor.name}/{skill.ref.slot}{skill.ref.variant}/c{c.index}")
@@ -175,16 +195,16 @@ class Runtime:
             ident = self.identities.get(u.identity_id)
             if ident is not None:
                 for p in ident.passives:
-                    if not self._passive_active(battle, p):
+                    if name not in self._events(p) or not self._passive_active(battle, p):
                         continue
                     pf = frame.child(aliases={**frame.aliases, **p.uses})
                     for b in p.blocks:
                         self._run_block(b, pf, name, key=f"{u.name}/p:{p.name}")
-            for kw_name, kw in self.keywords.items():
-                if kw.blocks and self._holds(u, kw_name):
-                    kf = frame.child(aliases={**frame.aliases, **kw.uses})
-                    for b in kw.blocks:
-                        self._run_block(b, kf, name, key=f"{u.name}/k:{kw_name}")
+            for kw_name in self._held_keywords(u, name):
+                kw = self.keywords[kw_name]
+                kf = frame.child(aliases={**frame.aliases, **kw.uses})
+                for b in kw.blocks:
+                    self._run_block(b, kf, name, key=f"{u.name}/k:{kw_name}")
 
     def _holds(self, u: Unit, kw: str) -> bool:
         return kw in u.statuses or kw in u.values
@@ -283,11 +303,11 @@ class Runtime:
             ident = self.identities.get(owner.identity_id)
             if ident:
                 for p in ident.passives:
-                    if self._passive_active(battle, p):
+                    if "always" in self._events(p) and self._passive_active(battle, p):
                         blocks += [(b, p.uses) for b in p.blocks]
-            for name, kw in self.keywords.items():
-                if self._holds(owner, name):
-                    blocks += [(b, kw.uses) for b in kw.blocks]
+            for name in self._held_keywords(owner, "always"):
+                kw = self.keywords[name]
+                blocks += [(b, kw.uses) for b in kw.blocks]
             for b, uses in blocks:
                 if isinstance(b, A.Always):
                     self.exec_body(b.body, frame_for(owner, uses))

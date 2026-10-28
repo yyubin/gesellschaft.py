@@ -61,8 +61,9 @@ class RolloutPolicy:
     """Policy 호환 (battle, unit) → Choice. 선택 단계(begin_turn 직후) 상태에서 호출된다.
     P1: 단독 인격 기준 — 같은 턴 다른 아군은 롤아웃 안에서 기준 정책으로 고른다 (팀 결합 선택은 P3)."""
     rt: Runtime
-    horizon: int = 4
+    horizon: int | None = 4             # None = 처치(또는 max_turns)까지 끝까지 굴림 — 큰 한 방 뒤 외삽 오차 없음
     rollouts: int = 32
+    max_turns: int = 30
     base: Policy = policy_highest
     objective: Objective = field(default_factory=Objective)
     seed: int = 0
@@ -102,7 +103,7 @@ class RolloutPolicy:
             if rem <= 0:                    # t 턴 안에서 처치: 그 턴 시작 체력 / 그 턴 피해 만큼만 사용
                 kill = t - 1 + (hp_before / dmg if dmg > 0 else 1)
                 break
-            if battle_over(b) or t >= self.horizon:   # 지평 밖: 마지막 턴 피해 속도로 남은 체력 추정
+            if battle_over(b) or t >= (self.horizon or self.max_turns):   # 지평 밖: 마지막 턴 피해 속도로 남은 체력 추정
                 kill = t + (rem / dmg if dmg > 0 else obj.cap)
                 break
             hp_before = rem

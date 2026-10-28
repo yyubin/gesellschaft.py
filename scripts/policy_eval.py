@@ -44,7 +44,8 @@ def main():
     ap.add_argument("--hp", type=float, default=300)
     ap.add_argument("--games", type=int, default=100)
     ap.add_argument("--max-turns", type=int, default=20)
-    ap.add_argument("--horizon", type=int, default=4)
+    ap.add_argument("--horizon", type=int, default=4, help="0 = 처치까지 끝까지 굴림")
+    ap.add_argument("--base", type=Path, default=None, help="롤아웃 기준 정책으로 쓸 계획 JSON (기본 highest)")
     ap.add_argument("--rollouts", type=int, default=32)
     ap.add_argument("--only", choices=["highest", "top", "rollout"], action="append")
     args = ap.parse_args()
@@ -52,9 +53,15 @@ def main():
 
     rt = load_runtime()
     battle = Battle([load_unit(args.identity), dummy(hp=args.hp)])
+    base = policy_highest
+    if args.base is not None:
+        import json
+        from engine.agent import plan as P
+        base = P.PlanPolicy(rt, P.Plan.from_dict(json.loads(args.base.read_text(encoding="utf-8"))))
     pols = {"highest": policy_highest, "top": policy_top,
-            "rollout": RolloutPolicy(rt, horizon=args.horizon, rollouts=args.rollouts)}
-    print(f"#{args.identity} vs 허수아비 체력 {args.hp:g}, {args.games}판 (같은 시드), 롤아웃 H={args.horizon} K={args.rollouts}")
+            "rollout": RolloutPolicy(rt, horizon=args.horizon or None, rollouts=args.rollouts, base=base)}
+    print(f"#{args.identity} vs 허수아비 체력 {args.hp:g}, {args.games}판 (같은 시드), 롤아웃 H={args.horizon or '끝까지'} "
+          f"K={args.rollouts} 기준 정책={args.base.name if args.base else 'highest'}")
     for pname in args.only or pols:
         t0 = time.time()
         res = [play_game(rt, battle, pols[pname], g, args.max_turns) for g in range(args.games)]

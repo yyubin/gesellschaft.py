@@ -70,3 +70,13 @@ def test_rollout_takes_weak_buildup_skill_that_highest_skips():
     assert pol(b, u).card == 0
     s1, s2 = pol.last[Choice(0, foe.name)], pol.last[Choice(1, foe.name)]
     assert s1 < s2
+
+
+def test_full_playout_rollout_also_takes_buildup():
+    rt = runtime(BUILDUP)
+    u, foe = unit("u", identity_id=1), dummy(hp=60)
+    u.hand, u.deck = [("S1", 0), ("S2", 0)], [("S1", 0), ("S1", 0), ("S2", 0), ("S3", 0)]
+    b = Battle([u, foe])
+    begin_turn(rt, b, random.Random(0))
+    pol = RolloutPolicy(rt, horizon=None, rollouts=16)
+    assert pol(b, u).card == 0
