@@ -16,8 +16,8 @@ from lpdl import ast as A
 from .state import CHARGE_KINDS, Battle, SkillData, Status, Unit
 
 ACTION_EVENTS = {"before_use", "use", "before_attack", "attack_end", "kill", "clash_start", "clash_win",
-                 "clash_lose", "coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail"}
-COIN_EVENTS = {"coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail", "clash_win", "clash_lose"}
+                 "clash_lose", "coin_start", "coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail"}
+COIN_EVENTS = {"coin_start", "coin_flip", "hit", "head_hit", "tail_hit", "crit", "head", "tail", "clash_win", "clash_lose"}
 RESOURCE_EVENTS = {"gained", "consumed", "applied", "burst"}
 UNIT_FIELDS = {"hp", "max_hp", "hp_ratio", "shield", "sanity", "has_sanity", "speed", "level", "formation"}
 ALLY_EVENTS = {"ally_hit_taken", "ally_before_attack", "ally_attack_end"}

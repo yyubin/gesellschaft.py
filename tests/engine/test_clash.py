@@ -163,3 +163,29 @@ def test_no_poise_no_crit():
     a, b = unit("A", 10, 0, 1), unit("B", 1, 0, 1, side="enemy")
     r = run_action(rt, Battle([a, b]), a, ("S1", 0), b, HEADS)
     assert r.crits == {1: False} and r.damage == pytest.approx(10)
+
+
+COIN_START = ('identity 1 { skill S1 { coin 2 { on coin_start { consume self.충전.count up_to 10 -> n '
+              'modify final_power n } } } }')
+
+
+def test_coin_start_does_not_apply_to_clash_power():
+    """[코인 시작 시] 위력 증가는 합 위력에 들어가지 않음 (사용자 확인 2026-10-28). 5 고정 vs 7 고정 → 패배, 충전 그대로."""
+    rt = runtime(COIN_START)
+    a = unit("A", 5, 0, 2, ident=1, statuses={"충전": Status(potency=0, count=15)})
+    b = unit("B", 7, 0, 2, side="enemy")
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert o.winner == "B"
+    assert a.statuses["충전"].count == 15
+
+
+def test_coin_start_fires_once_per_coin_in_attack_after_clash():
+    """합 2회 이겨도 소모는 공격할 때 1회. 코인 2 최종 위력 10 + 10."""
+    rt = runtime(COIN_START)
+    a = unit("A", 10, 0, 2, ident=1, statuses={"충전": Status(potency=0, count=15)})
+    b = unit("B", 5, 0, 2, side="enemy")
+    o = run_clash(rt, Battle([a, b]), a, ("S1", 0), b, ("S1", 0), HEADS)
+    assert o.rounds == 2
+    assert o.result.coin_power == {1: 10, 2: 20}
+    assert a.statuses["충전"].count == 5
+    assert o.result.damage == pytest.approx((10 + 20) * 1.02)

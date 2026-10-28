@@ -128,11 +128,14 @@ def _attack(rt: Runtime, battle: Battle, a: Action, skill_ast, target: Unit, tos
         k = coins[i]
         a.coin = k
         cm = a.coin_mods[k]
-        if skill_ast is not None and k not in heads:
-            coin_ast = next((c for c in skill_ast.coins if c.index == k), None)
-            if coin_ast is not None:
-                rt.run_static(battle, actor, cm, action=a, coin=coin_ast)
-        p = min(1.0, max(0.0, heads_prob(actor.sanity) + (a.mods["heads_prob"] + cm["heads_prob"]) / 100))
+        if k not in heads:
+            if skill_ast is not None:
+                coin_ast = next((c for c in skill_ast.coins if c.index == k), None)
+                if coin_ast is not None:
+                    rt.run_static(battle, actor, cm, action=a, coin=coin_ast)
+            # [코인 시작 시]: 공격할 때만 (합 라운드에는 없음), 코인당 1회 — 소모도 1회 (사용자 확인 2026-10-28)
+            rt.emit(battle, "coin_start", action=a)
+        p =min(1.0, max(0.0, heads_prob(actor.sanity) + (a.mods["heads_prob"] + cm["heads_prob"]) / 100))
         h = toss(p)
         heads[k] = h
         a.coin_heads[k] = h
