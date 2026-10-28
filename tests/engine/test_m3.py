@@ -192,3 +192,21 @@ def test_stagger_damage_moves_line_up():
     u.hp = 70
     check_stagger(b, u)
     assert u.stagger == 1 and u.stagger_gauge == 0 and u.stagger_lines == []
+
+
+def test_team_policy_intercepts_to_save_dying_ally():
+    """주사위 0 (속도 4, 피해 30) 이 체력 10 인 A 를 노림. B (속도 5, 위력 50) 만 가로챌 수 있음.
+    기준 정책은 둘 다 주사위 1 을 일방 공격 → 팀 정책은 B 를 주사위 0 으로 돌려 A 를 살림."""
+    from engine.runtime import TeamRolloutPolicy
+    from engine.runtime.turn import Intent
+    rt = runtime()
+    a, b = ally("A", 1, hp=10), ally("B", 5, base=50)
+    e = boss(hp=10**6, dice=2, speed=(4, 4), skills=[("강타", "타격", "분노", 30, 0, 1), ("약", "타격", "분노", 1, 0, 1)],
+             pattern=["강타", "약"], level=50, def_level=0, stagger_lines=())
+    battle, rng = setup(a, b, boss_unit=e)
+    actors = begin_turn(rt, battle, rng)
+    battle.intents = [Intent("보스", 0, ("E1", 0), "A", 4), Intent("보스", 1, ("E2", 0), "B", 9)]
+    base = lambda bt, u: Choice(0, "보스", 1)
+    pol = TeamRolloutPolicy(rt, horizon=1, rollouts=2, base=base)
+    joint = pol.joint(battle, actors)
+    assert joint["B"].die == 0

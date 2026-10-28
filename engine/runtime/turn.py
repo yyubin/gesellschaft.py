@@ -286,7 +286,10 @@ def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = p
              params: Params = DEFAULT) -> TurnLog:
     """턴 시작 → 속도 → 스킬 선택 (정책) → resolve_turn."""
     actors = begin_turn(rt, battle, rng)
-    choices = {u.name: policy(battle, u) for u in actors}
+    if hasattr(policy, "joint"):                              # 팀 결합 선택 (TeamRolloutPolicy, 팀 계획)
+        choices = policy.joint(battle, actors)
+    else:
+        choices = {u.name: policy(battle, u) for u in actors}
     return resolve_turn(rt, battle, rng, actors, choices, params)
 
 

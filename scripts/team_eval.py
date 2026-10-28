@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine.runtime import Battle, deal_hand, policy_highest, run_turn, stage_enter  # noqa: E402
+from engine.runtime import Battle, TeamRolloutPolicy, deal_hand, policy_highest, run_turn, stage_enter  # noqa: E402
 from engine.runtime.loader import load_runtime, load_unit  # noqa: E402
 from engine.runtime.scenarios import PRESETS, preset  # noqa: E402
 from engine.runtime.turn import battle_over  # noqa: E402
@@ -48,31 +48,63 @@ def play(rt, battle, policy, seed, max_turns=30):
             "clashes": clashes, "clash_wins": wins, "usage": usage, "stagger": stag}
 
 
+def make_policy(rt, name, horizon, rollouts, seed=0):
+    if name == "team":
+        return TeamRolloutPolicy(rt, horizon=horizon or None, rollouts=rollouts, seed=seed)
+    return policy_highest
+
+
+_RT = None
+
+
+def _worker(job):
+    global _RT
+    ids, pre, pname, horizon, rollouts, g = job
+    if _RT is None:
+        _RT = load_runtime()
+    team = [load_unit(i, formation=n) for n, i in enumerate(ids)]
+    battle = Battle([*team, preset(pre)])
+    r = play(_RT, battle, make_policy(_RT, pname, horizon, rollouts, seed=g), g)
+    r["usage"], r["stagger"] = dict(r["usage"]), dict(r["stagger"])
+    return r
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ids", type=int, nargs="+")
     ap.add_argument("--games", type=int, default=300)
     ap.add_argument("--preset", choices=sorted(PRESETS), default="hard")
+    ap.add_argument("--policy", choices=["highest", "team"], default="highest")
+    ap.add_argument("--horizon", type=int, default=3, help="team: 0 = 끝까지")
+    ap.add_argument("--rollouts", type=int, default=8)
+    ap.add_argument("--workers", type=int, default=1, help="판 단위 병렬 프로세스 수")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     rt = load_runtime()
     team = [load_unit(i, formation=n) for n, i in enumerate(args.ids)]
     battle = Battle([*team, preset(args.preset)])
-    rs = [play(rt, battle, policy_highest, g) for g in range(args.games)]
+    if args.workers > 1:
+        from multiprocessing import Pool
+        with Pool(args.workers) as pool:
+            rs = pool.map(_worker, [(args.ids, args.preset, args.policy, args.horizon, args.rollouts, g)
+                                    for g in range(args.games)])
+    else:
+        rs = [play(rt, battle, make_policy(rt, args.policy, args.horizon, args.rollouts), g) for g in range(args.games)]
     n = len(rs)
     won = [r for r in rs if r["won"]]
-    print(f"{' / '.join(u.name for u in team)} vs 보스 {args.preset}, {n}판, 정책 highest")
+    print(f"{' / '.join(u.name for u in team)} vs 보스 {args.preset}, {n}판, 정책 {args.policy}"
+          + (f" (H={args.horizon or '끝까지'} K={args.rollouts})" if args.policy == "team" else ""))
     print(f"  승리 {len(won) / n:.0%}, 처치 턴 평균 {sum(r['turns'] for r in won) / max(1, len(won)):.2f} (승리 판)")
     print(f"  아군 사망 평균 {sum(r['dead'] for r in rs) / n:.2f}, 남은 체력 평균 {sum(r['hp'] for r in rs) / n:.0%}")
     c = sum(r["clashes"] for r in rs)
     print(f"  합 {c / n:.1f}회/판, 아군 합 승률 {sum(r['clash_wins'] for r in rs) / max(1, c):.0%}")
     st = Counter()
     for r in rs:
-        st.update(r["stagger"])
+        st.update(Counter(r["stagger"]))
     print("  흐트러짐 횟수/판: " + ", ".join(f"{k} {v / n:.2f}" for k, v in st.most_common()))
     use = Counter()
     for r in rs:
-        use.update(r["usage"])
+        use.update(Counter(r["usage"]))
     for u in team:
         tot = sum(v for (nm, _), v in use.items() if nm == u.name) or 1
         print(f"  {u.name}: " + ", ".join(f"{s} {v / tot:.0%}" for (nm, s), v in sorted(use.items()) if nm == u.name))

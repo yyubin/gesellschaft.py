@@ -111,3 +111,96 @@ class RolloutPolicy:
             log = run_turn(self.rt, b, rng, self.base, self.params)
             t += 1
         return min(obj.cap, kill) + obj.survival(b, side, start)
+
+
+# ── M3: 팀 결합 선택 ─────────────────────────────────────────────────────────
+def team_choices(rt: Runtime, battle: Battle, u: Unit) -> list[Choice]:
+    """legal_choices 를 대상 주사위 기준으로 줄임: 합이 되는 주사위(내 속도 ≥) 는 각각, 일방 공격이 되는 주사위는 대표 하나.
+    공격하지 않는 수비 스킬(방어·회피·반격)은 대상과 무관 → 하나."""
+    from .turn import attacks
+    speeds = {(it.unit, it.die): it.speed for it in battle.intents}
+    out, seen = [], set()
+    for c in legal_choices(rt, battle, u):
+        key = DEF if c.card == "DEF" else u.hand[c.card]
+        key = u.skill_override.get(key, key)
+        if not attacks(rt, u, key):
+            sig = (c.card, "passive")
+        else:
+            sp = speeds.get((c.target, c.die))
+            sig = (c.card, (c.target, c.die)) if sp is not None and u.speed >= sp else (c.card, "one-sided")
+        if sig not in seen:
+            seen.add(sig)
+            out.append(c)
+    return out
+
+
+@dataclass
+class TeamRolloutPolicy:
+    """팀 결합 선택: 기준 정책으로 전원 선택 → 한 명씩 (나머지 고정) 후보를 롤아웃으로 비교해 교체 (좌표 상승, passes 회).
+    목표 = 처치 턴 (분수) + 생존 패널티 (Objective). 아군 전멸이면 cap.
+    run_turn 이 joint() 를 부른다. 단일 유닛 호출(__call__)도 지원."""
+    rt: Runtime
+    horizon: int | None = 3             # None = 끝까지
+    rollouts: int = 8
+    base: Policy = policy_highest
+    objective: Objective = field(default_factory=Objective)
+    passes: int = 1
+    seed: int = 0
+    max_turns: int = 30
+    params: Params = DEFAULT
+    last: dict = field(default_factory=dict)        # 유닛 → {Choice: 평균 목표값}
+    _calls: int = 0
+
+    def __call__(self, battle: Battle, u: Unit) -> Choice:
+        actors = [x for x in battle.units if x.hand is not None and x.hp > 0 and x.stagger_until is None]
+        return self.joint(battle, actors)[u.name]
+
+    def joint(self, battle: Battle, actors: list[Unit]) -> dict:
+        self._calls += 1
+        current = {u.name: self.base(battle, u) for u in actors}
+        self.last = {}
+        for _ in range(self.passes):
+            for u in actors:
+                cands = team_choices(self.rt, battle, u)
+                if current[u.name] not in cands:
+                    cands = [current[u.name], *cands]
+                if len(cands) <= 1:
+                    continue
+                scores = {}
+                for c in cands:
+                    trial = {**current, u.name: c}
+                    tot = 0.0
+                    for k in range(self.rollouts):
+                        rng = random.Random((self.seed, self._calls, k).__hash__())
+                        tot += self._sim(battle, trial, rng)
+                    scores[c] = tot / self.rollouts
+                self.last[u.name] = scores
+                current[u.name] = min(cands, key=lambda c: scores[c])
+        return current
+
+    def _sim(self, battle: Battle, choices: dict, rng: random.Random) -> float:
+        b = determinize(battle, rng)
+        obj = self.objective
+        side = "ally"
+        start = {u.name: u.hp_ratio for u in b.units}
+        actors = [u for u in b.units if u.name in choices]
+        t, hp_before = 1, obj.enemy_hp(b)
+        log = resolve_turn(self.rt, b, rng, actors, choices, self.params)
+        allies = [u for u in b.units if u.side == side]
+        while True:
+            rem = obj.enemy_hp(b)
+            names = {u.name for u in allies}
+            dmg = max(sum(a.damage for a in log.actions if a.unit in names), hp_before - rem)
+            if rem <= 0:
+                kill = t - 1 + (hp_before / dmg if dmg > 0 else 1)
+                break
+            if all(u.hp <= 0 for u in allies):
+                kill = obj.cap
+                break
+            if t >= (self.horizon or self.max_turns):
+                kill = t + (rem / dmg if dmg > 0 else obj.cap)
+                break
+            hp_before = rem
+            log = run_turn(self.rt, b, rng, self.base, self.params)
+            t += 1
+        return min(obj.cap, kill) + obj.survival(b, side, start)
