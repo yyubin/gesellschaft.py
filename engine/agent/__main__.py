@@ -92,8 +92,7 @@ def main():
         (out / "rollout_vs_plan.json").write_text(json.dumps(run.rollout_refs, ensure_ascii=False, indent=2),
                                                   encoding="utf-8")
         best = run.best
-        print(f"
-최고 계획: {best.plan.name} ({best.result['mean_kill_turn']}턴) → {out}")
+        print(f"\n최고 계획: {best.plan.name} ({best.result['mean_kill_turn']}턴) → {out}")
         return
 
     refs = {"highest": evaluate_set(rt, battles, lambda: policy_highest, games=args.games)["mean_kill_turn"]}
