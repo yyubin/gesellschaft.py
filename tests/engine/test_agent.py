@@ -171,3 +171,21 @@ def test_best_tie_break_fewer_rules_within_noise():
     b = Candidate(P.Plan.from_dict({"name": "b", "rules": [{"use": ["S1"]}]}), r([5, 6, 6, 5]))   # 평균 같음
     c = Candidate(P.Plan.from_dict({"name": "c", "rules": []}), r([7, 8, 7, 8]))                 # 확실히 느림
     assert GuideRun(1, candidates=[a, b, c]).best is b
+
+
+def test_distill_finds_buildup_deviation_and_refine_loop_runs(monkeypatch):
+    from engine.agent.distill import collect, summarize
+    from engine.agent.harness import run_refine
+    rt = runtime()
+    battles = [Battle([unit(), dummy(hp=60)])]
+    hi = P.Plan.from_dict({"name": "highest", "rules": []})
+    summ = summarize(collect(rt, battles, hi, games=4, rollouts=8))
+    assert summ["deviations"] > 0
+    assert any(p["rollout"] == "S1" for p in summ["patterns"])           # 탐색은 약한 S1 로 기세를 쌓음
+    monkeypatch.setattr("engine.agent.harness.spec_source", lambda rt, i: SRC)
+    good = {"name": "빌드업", "rules": [{"when": "self.기세 < 1", "use": ["S1"]}, {"avoid": ["S1"]}]}
+    conv = FakeConv([f"```json\n{json.dumps([good], ensure_ascii=False)}\n```", "# 가이드"])
+    run = run_refine(rt, battles, 1, lambda system: conv, hi, refs={}, iterations=1, n_plans=1, games=50,
+                     dev_games=2, rollouts=4, log=lambda *a: None)
+    assert run.best.plan.name == "빌드업"
+    assert "patterns" in conv.got[0] and run.guide == "# 가이드"

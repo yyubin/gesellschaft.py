@@ -2,6 +2,7 @@
 
     guide  202 [--hp 200,300,500 --rounds 4 --plans 3 --games 300 --rollout-ref 7.64]  → data/agent/202/
     eval   202 plan.json [--hp 300]                                            → 평가 JSON
+    refine 204 data/agent/204/best_plan.json [--iterations 3 --dev-games 10]   → data/agent/204/refine/
     advise state.json [--no-llm]                                               → 이번 턴 추천 + 설명
 """
 import argparse
@@ -15,7 +16,7 @@ from engine.runtime import Battle, policy_highest
 from engine.runtime.loader import ROOT, dummy, load_runtime, load_unit
 
 from . import plan as P
-from .harness import advise, run_guide, save_guide
+from .harness import advise, run_guide, run_refine, save_guide
 from .tools import evaluate, evaluate_set
 
 
@@ -44,11 +45,19 @@ def main():
     e.add_argument("plan", type=Path)
     e.add_argument("--hp", default="300", help="쉼표로 여러 개 → 시나리오 평균")
     e.add_argument("--games", type=int, default=300)
+    r = sub.add_parser("refine")
+    r.add_argument("identity", type=int)
+    r.add_argument("plan", type=Path, help="시작 계획 JSON (guide 의 best_plan.json 등)")
+    r.add_argument("--hp", default="200,300,500")
+    r.add_argument("--iterations", type=int, default=3)
+    r.add_argument("--plans", type=int, default=3)
+    r.add_argument("--games", type=int, default=300)
+    r.add_argument("--dev-games", type=int, default=10, help="탐색 차이 수집 판 수 (시나리오마다)")
     a = sub.add_parser("advise")
     a.add_argument("state", type=Path)
     a.add_argument("--no-llm", action="store_true")
     a.add_argument("--rollouts", type=int, default=64)
-    for p in (g, a):
+    for p in (g, r, a):
         p.add_argument("--backend", choices=["claude-code", "api"], default="claude-code")
         p.add_argument("--model", default=None)
     args = ap.parse_args()
@@ -71,6 +80,20 @@ def main():
         res = evaluate_set(rt, battles, lambda: P.PlanPolicy(rt, pl), games=args.games)
         res.pop("turns")
         print(json.dumps(res, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "refine":
+        start = P.Plan.from_dict(json.loads(args.plan.read_text(encoding="utf-8")))
+        refs = {"highest": evaluate_set(rt, battles, lambda: policy_highest, games=args.games)["mean_kill_turn"]}
+        run = run_refine(rt, battles, args.identity, backend(args.backend, args.model).start, start, refs=refs,
+                         iterations=args.iterations, n_plans=args.plans, games=args.games, dev_games=args.dev_games)
+        out = ROOT / "data" / "agent" / str(args.identity) / "refine"
+        save_guide(run, out)
+        (out / "rollout_vs_plan.json").write_text(json.dumps(run.rollout_refs, ensure_ascii=False, indent=2),
+                                                  encoding="utf-8")
+        best = run.best
+        print(f"
+최고 계획: {best.plan.name} ({best.result['mean_kill_turn']}턴) → {out}")
         return
 
     refs = {"highest": evaluate_set(rt, battles, lambda: policy_highest, games=args.games)["mean_kill_turn"]}

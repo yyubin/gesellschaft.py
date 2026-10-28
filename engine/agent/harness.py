@@ -248,6 +248,112 @@ def save_guide(run: GuideRun, out_dir: Path):
                                            encoding="utf-8")
 
 
+# ── 계획 개선 루프 (탐색이 계획과 다르게 고른 장면 → LLM 이 규칙화) ─────────────────
+REFINE_FIRST = """\
+현재 최고 계획과 평가 결과:
+{current}
+
+이 계획을 기준 정책으로 쓰는 탐색(롤아웃, 처치까지 끝까지 시뮬레이션)이 판을 진행하면서 **계획과 다르게 고른 장면**을 모았다.
+탐색 정책 성능 (같은 장면 수집 판): {rollout}
+{deviations}
+- gain = 탐색이 추정한 이득 (계획의 선택 − 탐색의 선택, 처치 턴). 탐색 추정이라 노이즈가 있다 — 여러 장면에서 반복되는 패턴만 믿어라
+- patterns = (계획 → 탐색) 카드 쌍별 횟수·평균 이득, samples = 이득이 큰 장면의 상태
+
+장면들의 공통 조건을 찾아 규칙으로 만들어라 (예: "S3 를 쓰려던 장면 중 target.진동.count 가 낮을 때 탐색은 S2").
+1. 패턴 분석 3~6줄
+2. 현재 계획에 규칙을 추가·수정한 계획 {n}개를 ```json 배열로. 각각 hypothesis 에 어떤 패턴을 반영했는지 적어라"""
+
+REFINE_NEXT = """\
+평가 결과 ({games}판 × 시나리오):
+{results}
+
+## 지금까지 순위
+{board}
+
+## 규칙 빼 보기 (이번 상위 계획)
+{ablation}
+
+## 새 최고 계획 기준으로 다시 모은 탐색과의 차이
+탐색 정책 성능: {rollout}
+{deviations}
+
+해석하고, 개선한 계획 {n}개를 ```json 배열로 내라. 해롭거나 불분명한 규칙은 빼라. 이미 평가한 계획은 다시 내지 마라."""
+
+
+def _dev_text(summary: dict) -> str:
+    return json.dumps({k: summary[k] for k in ("decisions", "deviations", "deviation_turns", "patterns", "samples")},
+                      ensure_ascii=False)
+
+
+def run_refine(rt: Runtime, battles: list[Battle], identity_id: int, conv_factory, start: P.Plan, *, refs: dict,
+               iterations: int = 3, n_plans: int = 3, games: int = 300, dev_games: int = 10, rollouts: int = 32,
+               ablate_top: int = 2, log=print) -> GuideRun:
+    from .distill import collect, summarize
+
+    run = GuideRun(identity_id)
+    cache: dict = {}
+    hps = [next(u for u in b.units if u.side == "enemy").max_hp for b in battles]
+    run.baseline = _eval_cached(rt, battles, P.Plan("highest", [], "highest"), games, cache)
+    seed_c = Candidate(start, _eval_cached(rt, battles, start, games, cache), round=0)
+    seed_c.ablation = ablate(rt, battles, seed_c, games, cache)
+    run.candidates.append(seed_c)
+    log(f"[시작] {start.name}: {seed_c.result['mean_kill_turn']} {seed_c.result.get('by_scenario', '')}")
+    conv = conv_factory(_system(identity_id, spec_source(rt, identity_id), hps, refs))
+    results, abl = "[]", "[]"
+    run.rollout_refs = []
+    for it in range(1, iterations + 1):
+        best = run.best
+        log(f"[반복 {it}] 탐색 차이 수집 — 기준 계획 {best.plan.name}")
+        summ = summarize(collect(rt, battles, best.plan, games=dev_games, rollouts=rollouts))
+        run.rollout_refs.append({"plan": best.plan.name, "plan_turns": best.result.get("by_scenario"),
+                                 "rollout_turns": summ["rollout_kill_turn"]})
+        log(f"  결정 {summ['decisions']}, 차이 {summ['deviations']}, 탐색 처치 턴 {summ['rollout_kill_turn']}")
+        if it == 1:
+            cur = {**_brief(best, run), "ablation": best.ablation}
+            msg = REFINE_FIRST.format(current=json.dumps(cur, ensure_ascii=False), rollout=summ["rollout_kill_turn"],
+                                      deviations=_dev_text(summ), n=n_plans)
+        else:
+            msg = REFINE_NEXT.format(games=games, results=results, board=_board(run), ablation=abl,
+                                     rollout=summ["rollout_kill_turn"], deviations=_dev_text(summ), n=n_plans)
+        reply = conv.send(msg)
+        run.transcript.append((msg, reply))
+        plans, errors = P.parse_plans(reply)
+        for e in errors:
+            log(f"  형식 오류 — {e}")
+        batch = []
+        for pl in plans:
+            c = Candidate(pl, round=it)
+            try:
+                probe = battles[0].clone()
+                probe.units[0].hand = [("S1", 0), ("S3", 0)]
+                P.check_plan(rt, probe, probe.units[0], pl)
+                c.result = _eval_cached(rt, battles, pl, games, cache)
+            except P.PlanError as e:
+                c.error = str(e)
+            batch.append(c)
+            log(f"  {pl.name}: " + (c.error or f"{c.result['mean_kill_turn']} ± {c.result['se']} "
+                                     f"{c.result.get('by_scenario', '')}"))
+        run.candidates += batch
+        ok = sorted((c for c in batch if c.result), key=lambda c: c.result["mean_kill_turn"])
+        for c in ok[:ablate_top]:
+            c.ablation = ablate(rt, battles, c, games, cache)
+            log(f"  빼 보기 {c.plan.name}: " + ", ".join(f"r{a['rule']} {a['delta']:+.2f}" for a in c.ablation))
+        results = json.dumps([_brief(c, run) for c in batch] + [{"error": e} for e in errors], ensure_ascii=False)
+        abl = json.dumps([{"name": c.plan.name, "rules": c.ablation} for c in ok[:ablate_top]], ensure_ascii=False)
+    best = run.best
+    if best.ablation is None:
+        best.ablation = ablate(rt, battles, best, games, cache)
+    final = {"refs": refs, "start": {"name": start.name, "mean_kill_turn": seed_c.result["mean_kill_turn"]},
+             "best": {**_brief(best, run), "ablation": best.ablation},
+             "rollout_vs_plan": run.rollout_refs, "leaderboard": json.loads(_board(run, top=10))}
+    log("[최종] 가이드 작성 요청")
+    msg = f"마지막 결과:\n{results}\n\n" + FINAL.format(results=json.dumps(final, ensure_ascii=False)) + \
+        "\n- 탐색(rollout_vs_plan)과 최고 계획의 남은 차이도 적어라 (규칙으로 못 잡은 부분)"
+    run.guide = conv.send(msg)
+    run.transcript.append((msg, run.guide))
+    return run
+
+
 # ── 조언 모드 ────────────────────────────────────────────────────────────────
 ADVISE = """\
 너는 Limbus Company 인격 운용 조언자다. 아래 시뮬레이션 결과만 근거로, 이번 턴에 무엇을 쓸지 한국어로 3~6줄로 설명해라.
