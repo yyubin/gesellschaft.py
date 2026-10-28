@@ -23,7 +23,7 @@ DECK = (("S1", 3), ("S2", 2), ("S3", 1))
 DEF = ("DEF", 0)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Choice:
     card: int | str            # 손패 칸 번호, 또는 "DEF" (아래 칸 대신 수비 스킬)
     target: str
@@ -97,23 +97,25 @@ def _can_act(battle: Battle, u: Unit) -> bool:
     return u.hand is not None and u.hp > 0 and u.stagger_until is None
 
 
-def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = policy_highest,
-             params: Params = DEFAULT) -> TurnLog:
-    """턴 시작 → 속도 → 스킬 선택 → 전투 시작 → 속도순 행동 → 전투 종료 → 턴 종료.
-    M2: 모든 행동은 일방 공격 (합 짝짓기는 M3)."""
-    log = TurnLog(battle.turn)
+def begin_turn(rt: Runtime, battle: Battle, rng: random.Random) -> list[Unit]:
+    """턴 시작 → 속도. 반환 = 이번 턴 행동할 유닛 (선택 단계 직전 상태 — 플레이어가 손패·속도를 보고 고르는 시점)."""
     turn_start(rt, battle)
-    by = {u.name: u for u in battle.units}
     actors = [u for u in battle.units if _can_act(battle, u)]
     for u in actors:                                            # 상시 효과의 speed_min/max (아르뮈르 +2 등) 반영
         m = new_mods()
         rt.run_static(battle, u, m)
         lo, hi = u.speed_min + int(m["speed_min"]), u.speed_max + int(m["speed_max"])
         u.speed = rng.randint(lo, max(lo, hi))
-    picks = {}
-    for u in actors:
-        c = policy(battle, u)
-        picks[u.name] = (play(u, c.card, rng), c.target)
+    return actors
+
+
+def resolve_turn(rt: Runtime, battle: Battle, rng: random.Random, actors: list[Unit], choices: dict[str, Choice],
+                 params: Params = DEFAULT) -> TurnLog:
+    """선택 반영(카드 사용) → 공명 집계 → 전투 시작 → 속도순 행동 → 전투 종료 → 턴 종료.
+    M2: 모든 행동은 일방 공격 (합 짝짓기는 M3)."""
+    log = TurnLog(battle.turn)
+    by = {u.name: u for u in battle.units}
+    picks = {u.name: (play(u, choices[u.name].card, rng), choices[u.name].target) for u in actors}
     battle.resonance = dict(Counter(u.skills[u.skill_override.get(k, k)].sin for u in actors
                                     for k in [picks[u.name][0]] if u.skills[u.skill_override.get(k, k)].sin))
     combat_start(rt, battle, {name: [key] for name, (key, _) in picks.items()})
@@ -143,6 +145,18 @@ def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = p
     battle.used_sins.clear()
     turn_end(rt, battle)
     return log
+
+
+def run_turn(rt: Runtime, battle: Battle, rng: random.Random, policy: Policy = policy_highest,
+             params: Params = DEFAULT) -> TurnLog:
+    """턴 시작 → 속도 → 스킬 선택 (정책) → resolve_turn."""
+    actors = begin_turn(rt, battle, rng)
+    choices = {u.name: policy(battle, u) for u in actors}
+    return resolve_turn(rt, battle, rng, actors, choices, params)
+
+
+def battle_over(battle: Battle) -> bool:
+    return all(u.hp <= 0 for u in battle.units if u.side == "enemy") or         all(u.hp <= 0 for u in battle.units if u.side == "ally")
 
 
 def simulate_turns(rt: Runtime, battle: Battle, turns: int, *, runs: int = 1000, seed: int = 0,

@@ -4,3 +4,4 @@ from .interp import Runtime
 from .loader import dummy, load_runtime, load_unit
 from .state import Battle, Status, Unit
 from .turn import Choice, deal_hand, mean_by_turn, play, policy_highest, policy_top, run_turn, simulate_turns
+from .policy import Objective, RolloutPolicy, legal_choices
