@@ -129,7 +129,7 @@ def test_guide_loop_feeds_back_results_and_errors(monkeypatch):
     conv = FakeConv([f"분석...\n```json\n{json.dumps([good, bad], ensure_ascii=False)}\n```",
                      f"```json\n{json.dumps([good], ensure_ascii=False)}\n```",
                      "# 가이드\n기세를 먼저 쌓는다"])
-    run = run_guide(rt, battle, 1, lambda system: conv, hp=60, refs={"highest": 9.9}, rounds=2, n_plans=2,
+    run = run_guide(rt, battle, 1, lambda system: conv, refs={"highest": 9.9}, rounds=2, n_plans=2,
                     games=50, log=lambda *a: None)
     assert run.best.plan.name == "빌드업"
     assert [c.error is None for c in run.candidates] == [True, False, True]
@@ -155,9 +155,9 @@ def test_ablation_flags_harmful_rule_and_best_prefers_simpler_plan(monkeypatch):
     good = P.Plan.from_dict({"name": "good", "rules": [{"when": "self.기세 < 1", "use": ["S1"]}, {"avoid": ["S1"]}]})
     noisy = P.Plan.from_dict({"name": "noisy", "rules": [{"when": "turn == 2", "use": ["S1"]},
                                                           {"when": "self.기세 < 1", "use": ["S1"]}, {"avoid": ["S1"]}]})
-    cg = Candidate(good, _eval_cached(rt, battle, good, 200, cache))
-    cn = Candidate(noisy, _eval_cached(rt, battle, noisy, 200, cache))
-    abl = ablate(rt, battle, cn, 200, cache)
+    cg = Candidate(good, _eval_cached(rt, [battle], good, 200, cache))
+    cn = Candidate(noisy, _eval_cached(rt, [battle], noisy, 200, cache))
+    abl = ablate(rt, [battle], cn, 200, cache)
     assert abl[0]["delta"] < 0 and abs(abl[0]["delta"]) > 2 * abl[0]["se_delta"]      # 빼면 빨라짐 = 해로운 규칙
     assert abl[1]["delta"] > 0                                                         # 빌드업 규칙은 도움
     run = GuideRun(1, candidates=[cn, cg])

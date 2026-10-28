@@ -16,7 +16,7 @@ from engine.runtime.state import Battle
 from engine.runtime.turn import Choice
 
 from . import plan as P
-from .tools import battle_from_state, evaluate, paired, spec_source
+from .tools import battle_from_state, evaluate_set, paired, spec_source
 
 GAME_RULES = """\
 ## 게임 규칙 (시뮬레이터에 구현된 것)
@@ -31,12 +31,14 @@ GAME_RULES = """\
 PLAN_FORMAT = P.__doc__
 
 
-def _system(identity_id: int, spec: str, hp: float, refs: dict) -> str:
+def _system(identity_id: int, spec: str, hps: list, refs: dict) -> str:
     return f"""너는 Limbus Company 인격 운용 전략가다. 시뮬레이터를 도구로 써서 인격 #{identity_id} 의 최적 운용 규칙을 찾는다.
 네가 쓰는 계획은 엔진이 실제로 실행·평가한다. 수치(턴 수, 비율)는 반드시 평가 결과에서만 인용하고 추측하지 마라.
 
 {GAME_RULES}
-시나리오: 인격 #{identity_id} 단독 vs 체력 {hp:g} 허수아비.
+시나리오: 인격 #{identity_id} 단독 vs 허수아비, 체력 {" / ".join(f"{h:g}" for h in hps)} 각각.
+**평가값 = 시나리오 평균 처치 턴** (by_scenario 에 각 값). 특정 체력·턴 수에만 맞는 규칙(예: turn >= 7)은
+다른 체력에서 손해를 보므로 피하고, 자원·상태 조건으로 써라. 분포·스킬 비율·trace 는 detail_scenario 기준.
 
 ## 기준 성능 (같은 난수, 평균 처치 턴 — 낮을수록 좋음)
 {json.dumps(refs, ensure_ascii=False)}
@@ -136,6 +138,8 @@ def _brief(c: Candidate, run: GuideRun | None = None) -> dict:
         return {"name": c.plan.name if c.plan else "?", "error": c.error}
     r = c.result
     out = {"name": c.plan.name, "plan": c.plan.to_dict(), "mean_kill_turn": r["mean_kill_turn"], "se": r["se"]}
+    if "by_scenario" in r:
+        out["by_scenario"] = r["by_scenario"]
     if run is not None and run.baseline is not None:
         out["vs_highest"] = dict(zip(("diff", "se"), paired(r, run.baseline)))
     out.update({k: r[k] for k in ("kill_turn_dist", "skill_share", "skill_share_by_turn", "rule_fired", "trace")})
@@ -152,10 +156,10 @@ def _board(run: GuideRun, top: int = 6) -> str:
     return json.dumps(rows, ensure_ascii=False)
 
 
-def _eval_cached(rt, battle, plan: P.Plan, games: int, cache: dict) -> dict:
+def _eval_cached(rt, battles: list, plan: P.Plan, games: int, cache: dict) -> dict:
     k = _key(plan)
     if k not in cache:
-        cache[k] = evaluate(rt, battle, lambda: P.PlanPolicy(rt, plan), games=games)
+        cache[k] = evaluate_set(rt, battles, lambda: P.PlanPolicy(rt, plan), games=games)
     return cache[k]
 
 
@@ -170,13 +174,16 @@ def ablate(rt: Runtime, battle: Battle, c: Candidate, games: int, cache: dict) -
     return out
 
 
-def run_guide(rt: Runtime, battle: Battle, identity_id: int, conv_factory, *, hp: float, refs: dict,
+def run_guide(rt: Runtime, battle: Battle | list[Battle], identity_id: int, conv_factory, *, refs: dict,
               rounds: int = 4, n_plans: int = 3, games: int = 300, ablate_top: int = 2, log=print) -> GuideRun:
     """conv_factory(system) -> Conversation (lpdl.compiler 백엔드의 start)."""
     run = GuideRun(identity_id)
     cache: dict = {}
-    run.baseline = _eval_cached(rt, battle, P.Plan("highest", [], "highest"), games, cache)
-    conv = conv_factory(_system(identity_id, spec_source(rt, identity_id), hp, refs))
+    battles = battle if isinstance(battle, list) else [battle]
+    battle = battles  # 아래 평가 호출은 시나리오 목록을 받음
+    hps = [next(u for u in b.units if u.side == "enemy").max_hp for b in battles]
+    run.baseline = _eval_cached(rt, battles, P.Plan("highest", [], "highest"), games, cache)
+    conv = conv_factory(_system(identity_id, spec_source(rt, identity_id), hps, refs))
     msg = FIRST.format(n=n_plans)
     results = "[]"
     for rnd in range(1, rounds + 1):
@@ -192,7 +199,7 @@ def run_guide(rt: Runtime, battle: Battle, identity_id: int, conv_factory, *, hp
         for pl in plans:
             c = Candidate(pl, round=rnd)
             try:
-                probe = battle.clone()
+                probe = battles[0].clone()
                 probe.units[0].hand = [("S1", 0), ("S3", 0)]
                 P.check_plan(rt, probe, probe.units[0], pl)
                 dup = _key(pl) in cache

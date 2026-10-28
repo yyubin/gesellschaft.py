@@ -99,6 +99,31 @@ def paired(a: dict, b: dict) -> tuple[float, float]:
     return round(sum(d) / len(d), 3), round(_se(d), 3)
 
 
+def evaluate_set(rt: Runtime, battles: list[Battle], make_policy, *, games: int = 300, seed: int = 0) -> dict:
+    """여러 시나리오(적 체력 등)에서 평가해 합친다 — 한 시나리오에 맞춘 규칙(과적합)을 걸러내기 위함.
+    mean_kill_turn = 시나리오 평균, turns = 시나리오별 판을 이어 붙임 (같은 순서라 paired 비교 가능).
+    분포·스킬 비율·trace 는 가운데 시나리오 기준 (detail_scenario)."""
+    rs = [evaluate(rt, b, make_policy, games=games, seed=seed) for b in battles]
+    if len(rs) == 1:
+        return rs[0]
+    labels = [f"hp {next(u for u in b.units if u.side == 'enemy').max_hp:g}" for b in battles]
+    mid = len(rs) // 2
+    out = dict(rs[mid])
+    turns = [t for r in rs for t in r["turns"]]
+    fired = Counter()
+    for r in rs:
+        fired.update(r["rule_fired"])
+    out.update({
+        "mean_kill_turn": round(sum(r["mean_kill_turn"] for r in rs) / len(rs), 3),
+        "se": round(sum(r["se"] ** 2 for r in rs) ** 0.5 / len(rs), 3),
+        "turns": turns,
+        "by_scenario": {lab: r["mean_kill_turn"] for lab, r in zip(labels, rs)},
+        "detail_scenario": labels[mid],
+        "rule_fired": dict(fired),
+    })
+    return out
+
+
 # ── 인격 spec 원문 ───────────────────────────────────────────────────────────
 def spec_source(rt: Runtime, identity_id: int) -> str:
     """인격 LPDL 원문 + 그 인격이 쓰는 비표준 키워드 정의 (examples/keyword)."""

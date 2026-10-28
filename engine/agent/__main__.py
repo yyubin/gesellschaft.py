@@ -1,7 +1,7 @@
 """python -m engine.agent <guide|eval|advise> ... (docs/08 P2)
 
-    guide  202 --hp 300 [--rounds 3 --plans 3 --games 300 --rollout-ref 7.64]   → data/agent/202/
-    eval   202 plan.json --hp 300                                              → 평가 JSON
+    guide  202 [--hp 200,300,500 --rounds 4 --plans 3 --games 300 --rollout-ref 7.64]  → data/agent/202/
+    eval   202 plan.json [--hp 300]                                            → 평가 JSON
     advise state.json [--no-llm]                                               → 이번 턴 추천 + 설명
 """
 import argparse
@@ -16,7 +16,7 @@ from engine.runtime.loader import ROOT, dummy, load_runtime, load_unit
 
 from . import plan as P
 from .harness import advise, run_guide, save_guide
-from .tools import evaluate
+from .tools import evaluate, evaluate_set
 
 
 class AgentClaudeCode(ClaudeCodeBackend):
@@ -34,7 +34,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("guide")
     g.add_argument("identity", type=int)
-    g.add_argument("--hp", type=float, default=300)
+    g.add_argument("--hp", default="200,300,500", help="적 체력 시나리오 (쉼표로 여러 개 → 평균)")
     g.add_argument("--rounds", type=int, default=4)
     g.add_argument("--plans", type=int, default=3)
     g.add_argument("--games", type=int, default=300)
@@ -42,7 +42,7 @@ def main():
     e = sub.add_parser("eval")
     e.add_argument("identity", type=int)
     e.add_argument("plan", type=Path)
-    e.add_argument("--hp", type=float, default=300)
+    e.add_argument("--hp", default="300", help="쉼표로 여러 개 → 시나리오 평균")
     e.add_argument("--games", type=int, default=300)
     a = sub.add_parser("advise")
     a.add_argument("state", type=Path)
@@ -63,17 +63,21 @@ def main():
             print("\n" + out["explanation"])
         return
 
-    battle = Battle([load_unit(args.identity), dummy(hp=args.hp)])
+    hps = [float(x) for x in str(args.hp).split(",")]
+    battles = [Battle([load_unit(args.identity), dummy(hp=h)]) for h in hps]
+    battle = battles[0]
     if args.cmd == "eval":
         pl = P.Plan.from_dict(json.loads(args.plan.read_text(encoding="utf-8")))
-        print(json.dumps(evaluate(rt, battle, lambda: P.PlanPolicy(rt, pl), games=args.games), ensure_ascii=False, indent=2))
+        res = evaluate_set(rt, battles, lambda: P.PlanPolicy(rt, pl), games=args.games)
+        res.pop("turns")
+        print(json.dumps(res, ensure_ascii=False, indent=2))
         return
 
-    refs = {"highest": evaluate(rt, battle, lambda: policy_highest, games=args.games)["mean_kill_turn"]}
+    refs = {"highest": evaluate_set(rt, battles, lambda: policy_highest, games=args.games)["mean_kill_turn"]}
     if args.rollout_ref is not None:
         refs["rollout"] = args.rollout_ref
     print(f"기준: {refs}")
-    run = run_guide(rt, battle, args.identity, backend(args.backend, args.model).start, hp=args.hp, refs=refs,
+    run = run_guide(rt, battles, args.identity, backend(args.backend, args.model).start, refs=refs,
                     rounds=args.rounds, n_plans=args.plans, games=args.games)
     out = ROOT / "data" / "agent" / str(args.identity)
     save_guide(run, out)
